@@ -125,7 +125,6 @@ org/mjsip/sip/call/DTMFInfo.class
 org/mjsip/time/SchedulerConfig.class
 org/zoolu/util/ByteUtils.class
 org/mjsip/ua/sound/AlawSilenceTrimmer.class
-org/mjsip/sdp/field/KeyParam.class
 org/mjsip/server/ServerProfile.class
 org/mjsip/sip/address/SipURIParser.class
 org/mjsip/sip/dialog/Dialog.class
@@ -205,7 +204,6 @@ org/mjsip/sip/header/AuthenticationHeader.class
 org/mjsip/sip/header/SessionExpiresHeader.class
 org/mjsip/sip/address/NameAddress.class
 org/mjsip/server/ServerProfile$DomainNamesHandler.class
-org/mjsip/rtp/NtpTimeStamp.class
 org/zoolu/net/TlsKeyTool.class
 org/mjsip/sip/header/ProxyAuthorizationHeader.class
 org/mjsip/sip/header/AllowHeader.class
@@ -255,7 +253,6 @@ org/zoolu/net/UdpPacket.class
 org/mjsip/sip/transaction/InviteTransactionClient.class
 org/zoolu/util/SimpleDigest.class
 org/mjsip/sip/provider/SipProviderListener.class
-org/mjsip/sip/dialog/ExtendedInviteDialog.class
 org/mjsip/sip/header/ContactHeader.class
 org/mjsip/sip/provider/UdpKeepAlive.class
 org/mjsip/server/sbc/AddressResolverKeepAlive.class
@@ -322,7 +319,6 @@ org/mjsip/server/sbc/SymmetricRegulatedUdpRelay.class
 org/zoolu/sound/codec/amr/PcmToAmrAudioInputStream.class
 org/mjsip/rtp/SrRtcpPacket$SenderInfo.class
 org/mjsip/sip/provider/SipKeepAlive.class
-org/mjsip/sdp/field/SrtpKeyParam.class
 org/mjsip/sip/header/MaxForwardsHeader.class
 org/mjsip/server/ServerProfile$ProxyRuleHandler.class
 org/zoolu/util/MessageDigest.class

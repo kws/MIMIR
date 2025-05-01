@@ -3,14 +3,16 @@ package com.kajsiebert.sip;
 import org.mjsip.media.MediaDesc;
 import org.mjsip.sip.address.NameAddress;
 import org.mjsip.sip.address.SipURI;
-import org.mjsip.sip.provider.SipOptions;
 import org.mjsip.sip.provider.SipProvider;
+import org.mjsip.time.Scheduler;
+import org.mjsip.time.SchedulerConfig;
 import org.mjsip.ua.MediaAgent;
-import org.mjsip.ua.StaticOptions;
 import org.mjsip.ua.UserAgent;
 import org.mjsip.ua.UserAgentListener;
+import org.mjsip.pool.PortPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import java.util.concurrent.Executors;
 
 /**
@@ -23,12 +25,13 @@ public class SipClient implements UserAgentListener {
 
     private SipProvider sipProvider;
     private UserAgent userAgent;
-    private StaticOptions userProfile;
+    private SipOptions clientOptions;
     private RtpInterceptorFactory mediaFactory;
     private AudioProcessor audioProcessor;
     private MediaAgent mediaAgent;
     private boolean registered = false;
     private boolean callActive = false;
+    private Config config;
 
     /**
      * Create a new SIP client with the specified configuration.
@@ -39,28 +42,20 @@ public class SipClient implements UserAgentListener {
         try {
             LOGGER.info("Initializing SIP client");
             
-            // Set up SIP provider with options
-            SipOptions options = new SipOptions();
-            options.setLocalPort(config.getLocalPort());
-            options.setBindAddr(config.getLocalAddress());
-            sipProvider = new SipProvider(options);
+            this.config = config;
+            
+            // Set up SIP provider with scheduler
+            Scheduler scheduler = new Scheduler(new SchedulerConfig());
+            sipProvider = new SipProvider(config.getLocalAddress(), config.getLocalPort(), scheduler);
             
             // Configure user profile
-            userProfile = new StaticOptions();
-            userProfile.setUserName(config.getUsername());
-            userProfile.setRealm(config.getDomain());
-            userProfile.setPassword(config.getPassword());
-            userProfile.setAuthUser(config.getAuthUsername());
-            userProfile.setOutboundProxy(config.getProxyAddress() + ":" + config.getProxyPort());
-            userProfile.setRegistrar(config.getRegistrarAddress() + ":" + config.getRegistrarPort());
-            userProfile.setExpires(config.getRegisterExpires());
-            userProfile.setAudioPort(config.getMediaPort());
-            userProfile.setVideoPort(config.getVideoPort());
-            userProfile.setAudioCodecNames(config.getAudioCodecs());
-            userProfile.setDefaultTransport(config.getTransport());
+            clientOptions = new SipOptions(config);
             
             // Create audio processor
             audioProcessor = new AudioProcessor();
+            
+            // Enable echo mode with delay
+            audioProcessor.setEchoMode(true, 1000); // 1 second delay
             
             // Create custom media streamer
             mediaFactory = new RtpInterceptorFactory(audioProcessor);
@@ -79,16 +74,22 @@ public class SipClient implements UserAgentListener {
         try {
             LOGGER.info("Starting SIP client");
             
+            // Create port pool for media
+            PortPool portPool = new PortPool(config.getMediaPort(), config.getMediaPort() + 10);
+            
             // Create user agent for handling SIP calls
-            userAgent = new UserAgent(sipProvider, this);
+            userAgent = new UserAgent(sipProvider, portPool, clientOptions, this);
             
-            // Create the media agent
-            mediaAgent = userAgent.createMediaAgent(userProfile, mediaFactory);
-            
-            // Register with the server
-            if (userProfile.mustRegister()) {
-                LOGGER.info("Registering with SIP server: {}", userProfile.getRegistrarUri());
-                userAgent.register(userProfile);
+            // Register with the server if configured
+            if (!config.getDomain().isEmpty() && !config.getUsername().isEmpty() && !config.getPassword().isEmpty()) {
+                LOGGER.info("Registering with SIP server: {}", config.getRegistrarAddress() + ":" + config.getRegistrarPort());
+                
+                // Build the SIP URI
+                String authRealm = config.getDomain();
+                String authUser = config.getAuthUsername() != null ? config.getAuthUsername() : config.getUsername();
+                String authPasswd = config.getPassword();
+                
+                userAgent.register(authUser, authRealm, authPasswd);
             } else {
                 LOGGER.info("Registration disabled in configuration");
             }
@@ -113,13 +114,20 @@ public class SipClient implements UserAgentListener {
             }
             
             if (registered) {
-                userAgent.unregister();
+                // Unregister with the same credentials used for registration
+                String authRealm = config.getDomain();
+                String authUser = config.getAuthUsername() != null ? config.getAuthUsername() : config.getUsername();
+                String authPasswd = config.getPassword();
+                
+                userAgent.unregister(authUser, authRealm, authPasswd);
                 registered = false;
             }
             
             if (sipProvider != null) {
                 sipProvider.halt();
             }
+            
+            audioProcessor.stopProcessing();
             
             LOGGER.info("SIP client stopped");
         } catch (Exception e) {
@@ -136,6 +144,29 @@ public class SipClient implements UserAgentListener {
         this.audioProcessor = audioProcessor;
         if (mediaFactory != null) {
             mediaFactory.setAudioProcessor(audioProcessor);
+        }
+    }
+    
+    /**
+     * Set the echo delay for the audio processor.
+     *
+     * @param delayMs The delay in milliseconds
+     */
+    public void setEchoDelay(int delayMs) {
+        if (audioProcessor != null) {
+            audioProcessor.setEchoDelay(delayMs);
+        }
+    }
+    
+    /**
+     * Enable or disable echo mode.
+     *
+     * @param enable true to enable echo mode, false to disable
+     * @param delayMs The delay in milliseconds (if enabling)
+     */
+    public void setEchoMode(boolean enable, int delayMs) {
+        if (audioProcessor != null) {
+            audioProcessor.setEchoMode(enable, delayMs);
         }
     }
 
@@ -253,5 +284,32 @@ public class SipClient implements UserAgentListener {
      */
     public boolean isCallActive() {
         return callActive;
+    }
+    
+    /**
+     * Get statistics about the audio processing.
+     * 
+     * @return A string with statistics
+     */
+    public String getAudioStats() {
+        if (audioProcessor == null) {
+            return "Audio processor not available";
+        }
+        
+        StringBuilder sb = new StringBuilder();
+        sb.append("Audio processor statistics:\n");
+        sb.append("  Processing: ").append(audioProcessor.isProcessing()).append("\n");
+        sb.append("  Passthrough: ").append(audioProcessor.isPassthrough()).append("\n");
+        sb.append("  Echo mode: ").append(audioProcessor.isEchoMode()).append("\n");
+        
+        if (audioProcessor.isEchoMode()) {
+            sb.append("  Echo delay: ").append(audioProcessor.getEchoDelay()).append(" ms\n");
+            sb.append("  Echo buffer size: ").append(audioProcessor.getEchoBufferSize()).append("\n");
+        }
+        
+        sb.append("  Packets processed: ").append(audioProcessor.getPacketsProcessed()).append("\n");
+        sb.append("  Bytes processed: ").append(audioProcessor.getBytesProcessed()).append("\n");
+        
+        return sb.toString();
     }
 }

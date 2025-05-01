@@ -3,18 +3,27 @@ package com.kajsiebert.sip;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.LinkedList;
+import java.util.Queue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Processor for audio data received from RTP packets.
  * This class handles the processing of audio data from the RTP
  * streams, allowing for external processing of the audio.
+ * 
+ * In echo mode, it adds a configurable delay to the audio.
  */
 public class AudioProcessor {
     private static final Logger LOGGER = LoggerFactory.getLogger(AudioProcessor.class);
+    
+    // Queue sizes
+    private static final int DEFAULT_QUEUE_SIZE = 100;
+    private static final int MAX_QUEUE_SIZE = 1000;
     
     // Queues for audio data
     private BlockingQueue<byte[]> incomingQueue;
@@ -26,6 +35,14 @@ public class AudioProcessor {
     // Control flags
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean passthrough = new AtomicBoolean(true);
+    private final AtomicBoolean echoMode = new AtomicBoolean(false);
+    private final AtomicInteger echoDelayMs = new AtomicInteger(500); // default 500ms delay
+    private final AtomicInteger echoPacketBuffer = new AtomicInteger(10); // default buffer size
+    
+    // Echo buffer
+    private Queue<byte[]> echoBuffer;
+    private long lastPacketTimestamp = 0;
+    private int packetIntervalMs = 20; // assume 20ms per packet by default (common in RTP)
     
     // Statistics
     private final AtomicLong packetsProcessed = new AtomicLong(0);
@@ -35,8 +52,9 @@ public class AudioProcessor {
      * Create a new audio processor with default settings.
      */
     public AudioProcessor() {
-        incomingQueue = new LinkedBlockingQueue<>(100);
-        outgoingQueue = new LinkedBlockingQueue<>(100);
+        incomingQueue = new LinkedBlockingQueue<>(MAX_QUEUE_SIZE);
+        outgoingQueue = new LinkedBlockingQueue<>(MAX_QUEUE_SIZE);
+        echoBuffer = new LinkedList<>();
     }
     
     /**
@@ -52,6 +70,9 @@ public class AudioProcessor {
                 packetsProcessed.incrementAndGet();
                 bytesProcessed.addAndGet(data.length);
                 return data;
+            } else if (echoMode.get()) {
+                // In echo mode, add to echo buffer and return delayed packet
+                return processEcho(data);
             } else {
                 // In processing mode, add to the incoming queue
                 if (incomingQueue.offer(data)) {
@@ -77,6 +98,60 @@ public class AudioProcessor {
     }
     
     /**
+     * Process audio data in echo mode with delay.
+     * 
+     * @param data The audio data to process
+     * @return The delayed audio data
+     */
+    private byte[] processEcho(byte[] data) {
+        long now = System.currentTimeMillis();
+        
+        // Calculate packet interval if needed
+        if (lastPacketTimestamp > 0) {
+            long interval = now - lastPacketTimestamp;
+            if (interval > 0 && interval < 100) { // sanity check for interval
+                // Use exponential smoothing to update packet interval
+                packetIntervalMs = (int)((packetIntervalMs * 0.9) + (interval * 0.1));
+            }
+        }
+        lastPacketTimestamp = now;
+        
+        // Add the packet to the echo buffer
+        echoBuffer.add(data.clone()); // clone to avoid data being modified
+        
+        // Calculate how many packets to buffer for the desired delay
+        int targetBufferSize = echoDelayMs.get() / packetIntervalMs;
+        if (targetBufferSize < 1) targetBufferSize = 1;
+        
+        // If we have enough packets buffered, return the oldest one
+        byte[] result;
+        if (echoBuffer.size() > targetBufferSize) {
+            result = echoBuffer.remove();
+        } else {
+            // Buffer not full yet, return silence
+            result = generateSilence(data.length);
+        }
+        
+        packetsProcessed.incrementAndGet();
+        bytesProcessed.addAndGet(data.length);
+        
+        return result;
+    }
+    
+    /**
+     * Generate a silent audio packet of the given length.
+     * 
+     * @param length The length of the packet
+     * @return A silent audio packet
+     */
+    private byte[] generateSilence(int length) {
+        byte[] silence = new byte[length];
+        // For most audio codecs, all zeros represent silence
+        // Some codecs use a specific value like 0x7F, but zeros usually work
+        return silence;
+    }
+    
+    /**
      * Start audio processing.
      */
     public void startProcessing() {
@@ -90,12 +165,20 @@ public class AudioProcessor {
         // Clear any existing data
         incomingQueue.clear();
         outgoingQueue.clear();
+        echoBuffer.clear();
+        lastPacketTimestamp = 0;
         
         // Start the processing thread
         processingThread = new Thread(this::processingLoop, "AudioProcessor");
         processingThread.start();
         
-        LOGGER.info("Audio processor started with passthrough: {}", passthrough.get());
+        if (echoMode.get()) {
+            LOGGER.info("Audio processor started in echo mode with delay: {}ms", echoDelayMs.get());
+        } else if (passthrough.get()) {
+            LOGGER.info("Audio processor started in passthrough mode");
+        } else {
+            LOGGER.info("Audio processor started in processing mode");
+        }
     }
     
     /**
@@ -122,6 +205,7 @@ public class AudioProcessor {
         // Clear any existing data
         incomingQueue.clear();
         outgoingQueue.clear();
+        echoBuffer.clear();
         
         LOGGER.info("Audio processor stopped, processed {} packets, {} bytes",
                 packetsProcessed.get(), bytesProcessed.get());
@@ -182,7 +266,40 @@ public class AudioProcessor {
      */
     public void setPassthrough(boolean passthrough) {
         this.passthrough.set(passthrough);
+        if (passthrough) {
+            // If enabling passthrough, disable echo mode
+            echoMode.set(false);
+        }
         LOGGER.info("Audio processor passthrough mode: {}", passthrough);
+    }
+    
+    /**
+     * Set echo mode with delay.
+     * 
+     * @param enable true to enable echo mode, false to disable
+     * @param delayMs the echo delay in milliseconds
+     */
+    public void setEchoMode(boolean enable, int delayMs) {
+        if (enable) {
+            // If enabling echo mode, disable passthrough
+            passthrough.set(false);
+            echoMode.set(true);
+            echoDelayMs.set(delayMs);
+            LOGGER.info("Audio processor echo mode enabled with delay: {}ms", delayMs);
+        } else {
+            echoMode.set(false);
+            LOGGER.info("Audio processor echo mode disabled");
+        }
+    }
+    
+    /**
+     * Set the echo delay.
+     * 
+     * @param delayMs the echo delay in milliseconds
+     */
+    public void setEchoDelay(int delayMs) {
+        echoDelayMs.set(delayMs);
+        LOGGER.info("Audio processor echo delay set to: {}ms", delayMs);
     }
     
     /**
@@ -192,6 +309,24 @@ public class AudioProcessor {
      */
     public boolean isPassthrough() {
         return passthrough.get();
+    }
+    
+    /**
+     * Check if echo mode is enabled.
+     * 
+     * @return true if echo mode is enabled, false otherwise
+     */
+    public boolean isEchoMode() {
+        return echoMode.get();
+    }
+    
+    /**
+     * Get the echo delay.
+     * 
+     * @return the echo delay in milliseconds
+     */
+    public int getEchoDelay() {
+        return echoDelayMs.get();
     }
     
     /**
@@ -219,6 +354,15 @@ public class AudioProcessor {
      */
     public int getOutgoingQueueSize() {
         return outgoingQueue.size();
+    }
+    
+    /**
+     * Get the size of the echo buffer.
+     * 
+     * @return The number of items in the echo buffer
+     */
+    public int getEchoBufferSize() {
+        return echoBuffer.size();
     }
     
     /**

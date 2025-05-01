@@ -28,6 +28,10 @@ public class Main {
             // Create the configuration
             Config config = new Config();
             
+            // Default echo delay in milliseconds
+            int echoDelay = 500;
+            boolean echoMode = true;
+            
             // Parse command-line arguments
             for (int i = 0; i < args.length; i++) {
                 String arg = args[i];
@@ -58,6 +62,10 @@ public class Main {
                     config.setAuthUsername(args[++i]);
                 } else if (arg.equals("--local-address") && i < args.length - 1) {
                     config.setLocalAddress(args[++i]);
+                } else if (arg.equals("--echo-delay") && i < args.length - 1) {
+                    echoDelay = Integer.parseInt(args[++i]);
+                } else if (arg.equals("--echo-mode") && i < args.length - 1) {
+                    echoMode = Boolean.parseBoolean(args[++i]);
                 } else if (arg.equals("--help")) {
                     printHelp();
                     return;
@@ -66,6 +74,12 @@ public class Main {
             
             // Create the audio processor
             audioProcessor = new AudioProcessor();
+            
+            // Set echo mode
+            if (echoMode) {
+                audioProcessor.setEchoMode(true, echoDelay);
+                LOGGER.info("Echo mode enabled with delay: {}ms", echoDelay);
+            }
             
             // Create and start the SIP client
             sipClient = new SipClient(config);
@@ -110,6 +124,22 @@ public class Main {
                 } else if (line.trim().equalsIgnoreCase("passthrough off")) {
                     audioProcessor.setPassthrough(false);
                     LOGGER.info("Passthrough mode disabled");
+                } else if (line.trim().equalsIgnoreCase("echo on")) {
+                    audioProcessor.setEchoMode(true, audioProcessor.getEchoDelay());
+                    LOGGER.info("Echo mode enabled with delay: {}ms", audioProcessor.getEchoDelay());
+                } else if (line.trim().equalsIgnoreCase("echo off")) {
+                    audioProcessor.setEchoMode(false, 0);
+                    LOGGER.info("Echo mode disabled");
+                } else if (line.trim().startsWith("echo delay ")) {
+                    try {
+                        int delay = Integer.parseInt(line.trim().substring(11));
+                        audioProcessor.setEchoDelay(delay);
+                        LOGGER.info("Echo delay set to: {}ms", delay);
+                    } catch (NumberFormatException e) {
+                        LOGGER.error("Invalid delay value. Usage: echo delay <milliseconds>");
+                    }
+                } else if (line.trim().equalsIgnoreCase("stats")) {
+                    printDetailedStats();
                 } else if (!line.trim().isEmpty()) {
                     LOGGER.info("Unknown command: {}", line);
                     printCommands();
@@ -140,11 +170,23 @@ public class Main {
         LOGGER.info("  Call active: {}", callActive);
         LOGGER.info("  Audio processing: {}", processing);
         
-        if (processing) {
-            LOGGER.info("  Incoming queue size: {}", audioProcessor.getIncomingQueueSize());
-            LOGGER.info("  Outgoing queue size: {}", audioProcessor.getOutgoingQueueSize());
-            LOGGER.info("  Packets processed: {}", audioProcessor.getPacketsProcessed());
-            LOGGER.info("  Bytes processed: {}", audioProcessor.getBytesProcessed());
+        if (audioProcessor != null) {
+            LOGGER.info("  Passthrough mode: {}", audioProcessor.isPassthrough());
+            LOGGER.info("  Echo mode: {}", audioProcessor.isEchoMode());
+            if (audioProcessor.isEchoMode()) {
+                LOGGER.info("  Echo delay: {}ms", audioProcessor.getEchoDelay());
+            }
+        }
+    }
+    
+    /**
+     * Print detailed statistics about the SIP client and audio processing.
+     */
+    private static void printDetailedStats() {
+        if (sipClient != null) {
+            LOGGER.info(sipClient.getAudioStats());
+        } else {
+            LOGGER.info("SIP client not available");
         }
     }
     
@@ -155,10 +197,14 @@ public class Main {
         LOGGER.info("Available commands:");
         LOGGER.info("  help - Print this help message");
         LOGGER.info("  status - Print the status of the SIP client");
+        LOGGER.info("  stats - Print detailed statistics");
         LOGGER.info("  register - Register with the SIP server");
         LOGGER.info("  unregister - Unregister from the SIP server");
         LOGGER.info("  passthrough on - Enable passthrough mode (no audio processing)");
         LOGGER.info("  passthrough off - Disable passthrough mode (process audio)");
+        LOGGER.info("  echo on - Enable echo mode");
+        LOGGER.info("  echo off - Disable echo mode");
+        LOGGER.info("  echo delay <ms> - Set echo delay in milliseconds");
         LOGGER.info("  quit/exit - Exit the application");
     }
     
@@ -180,6 +226,8 @@ public class Main {
         System.out.println("  --media-port <port>         Local port for RTP media (default: 4000)");
         System.out.println("  --auth-username <username>  Authentication username (if different from SIP username)");
         System.out.println("  --local-address <address>   Local IP address to bind to");
+        System.out.println("  --echo-delay <ms>           Echo delay in milliseconds (default: 500)");
+        System.out.println("  --echo-mode <true|false>    Enable or disable echo mode (default: true)");
         System.out.println("  --help                      Print this help message");
         System.out.println();
         System.out.println("Example:");
