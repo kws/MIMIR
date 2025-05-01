@@ -103,34 +103,40 @@ public class RtpMediaStreamer implements MediaStreamer, Runnable {
     }
     
     @Override
-    public void halt() {
-        if (!running.compareAndSet(true, false)) {
-            return;
+    public boolean halt() {
+        if (!running.get()) {
+            return false;
         }
         
-        // Close the socket
+        running.set(false);
         if (socket != null) {
             socket.close();
-            socket = null;
         }
-        
-        // Wait for the thread to finish
         if (processingThread != null) {
+            processingThread.interrupt();
             try {
-                processingThread.join(1000);
+                processingThread.join();
             } catch (InterruptedException e) {
-                LOGGER.warn("Interrupted while waiting for processing thread to finish");
+                Thread.currentThread().interrupt();
             }
-            processingThread = null;
         }
-        
-        LOGGER.info("RTP media streamer stopped: {} received packets, {} sent packets",
-                packetsReceived, packetsSent);
+        return true;
     }
     
     @Override
     public void run() {
-        LOGGER.info("RTP processing thread started");
+        if (!running.compareAndSet(false, true)) {
+            return;
+        }
+        
+        try {
+            socket = new DatagramSocket(flowSpec.getLocalPort());
+            LOGGER.info("RTP socket created on port {}", flowSpec.getLocalPort());
+        } catch (SocketException e) {
+            LOGGER.error("Failed to create RTP socket", e);
+            running.set(false);
+            return;
+        }
         
         try {
             byte[] buffer = new byte[BUFFER_SIZE];
@@ -151,7 +157,7 @@ public class RtpMediaStreamer implements MediaStreamer, Runnable {
                     byte[] processedData = audioProcessor.processAudio(audioData);
                     
                     // Forward the processed packet
-                    InetAddress remoteAddr = InetAddress.getByName(flowSpec.getRemoteAddr());
+                    InetAddress remoteAddr = InetAddress.getByName(flowSpec.getRemoteAddress());
                     DatagramPacket outPacket = new DatagramPacket(
                             processedData, processedData.length, remoteAddr, flowSpec.getRemotePort());
                     socket.send(outPacket);

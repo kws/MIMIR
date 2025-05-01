@@ -37,6 +37,19 @@
             <artifactId>args4j</artifactId>
             <version>2.33</version>
         </dependency>
+
+        <dependency>	
+            <groupId>org.mjsip</groupId>
+            <artifactId>mjsip-ua</artifactId>
+            <version>2.0.0</version>
+        </dependency>
+
+        <dependency>	
+            <groupId>org.mjsip</groupId>
+            <artifactId>mjsip-server</artifactId>
+            <version>2.0.0</version>
+        </dependency>
+
     </dependencies>
 
     <build>
@@ -76,4 +89,18 @@
             </plugin>
         </plugins>
     </build>
+
+    <repositories>
+        <repository>
+            <id>github</id>
+            <name>GitHub haumacher/mjSIP Apache Maven Packages</name>
+            <url>https://maven.pkg.github.com/haumacher/mjSIP</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>    
 </project>

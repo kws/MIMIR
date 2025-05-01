@@ -61,7 +61,7 @@ public class RtpInterceptorFactory implements StreamerFactory {
         activeStreamers.put(id, streamer);
         
         LOGGER.info("Created RTP interceptor: {}, local port: {}, remote: {}:{}", 
-                id, flowSpec.getLocalPort(), flowSpec.getRemoteAddr(), flowSpec.getRemotePort());
+                id, flowSpec.getLocalPort(), flowSpec.getRemoteAddress(), flowSpec.getRemotePort());
                 
         return streamer;
     }

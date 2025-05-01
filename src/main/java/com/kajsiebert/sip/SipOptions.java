@@ -21,7 +21,7 @@ public class SipOptions implements ClientOptions {
     private String mediaAddr = null;
     private boolean noOffer = false;
     private int refuseTime = -1; // never refuse automatically
-    private Direction direction = Direction.DUPLEX;
+    private Direction direction = Direction.FULL_DUPLEX;
     private NameAddress userURI;
     private String[] audioCodecs;
     private String transport;
