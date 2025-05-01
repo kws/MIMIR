@@ -14,9 +14,9 @@ import java.util.Base64;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 
-public class OpenAIRealtimeReceiver {
+public class OpenAIRealtimeReceiver extends Thread {
     private static final Logger LOG = LoggerFactory.getLogger(OpenAIRealtimeReceiver.class);
-    private static final String WS_URL = "wss://api.openai.com/v1/audio/transcriptions";
+    private static final String WS_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17";
     private static final String API_KEY = System.getenv("OPENAI_API_KEY");
 
     private final ObjectMapper mapper = new ObjectMapper();
@@ -42,10 +42,11 @@ public class OpenAIRealtimeReceiver {
             .join();
     }
 
-    public void stop() {
+    public void shutdown() {
         if (webSocket != null) {
             webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "Shutting down");
         }
+        this.interrupt();
     }
 
     public WebSocket getWebSocket() {
@@ -63,6 +64,7 @@ public class OpenAIRealtimeReceiver {
         @Override
         public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
             try {
+                LOG.info("Received text data: {}", data);   
                 ObjectNode msg = (ObjectNode) mapper.readTree(data.toString());
                 String type = msg.get("type").asText();
 

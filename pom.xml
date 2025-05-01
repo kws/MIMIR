@@ -76,7 +76,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>com.kajsiebert.sip.echo.EchoUserAgent</mainClass>
+                            <mainClass>com.kajsiebert.sip.openai.OpenAIRealtimeUserAgent</mainClass>
                         </manifest>
                     </archive>
                     <descriptorRefs>
