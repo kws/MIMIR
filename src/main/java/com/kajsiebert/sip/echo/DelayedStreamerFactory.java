@@ -1,4 +1,4 @@
-package com.kajsiebert.sip;
+package com.kajsiebert.sip.echo;
 
 
 import java.util.concurrent.Executor;

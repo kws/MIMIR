@@ -19,7 +19,7 @@
  * Luca Veltri (luca.veltri@unipr.it)
  */
 
-package com.kajsiebert.sip;
+package com.kajsiebert.sip.echo;
 
 
 import java.io.InterruptedIOException;

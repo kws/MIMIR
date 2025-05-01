@@ -1,4 +1,4 @@
-package com.kajsiebert.sip;
+package com.kajsiebert.sip.echo;
 
 
 /** Listener for UdpRelay.

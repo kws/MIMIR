@@ -19,7 +19,7 @@
  * Luca Veltri (luca.veltri@unipr.it)
  */
 
-package com.kajsiebert.sip;
+package com.kajsiebert.sip.echo;
 
 
 import org.kohsuke.args4j.Option;
@@ -60,9 +60,9 @@ import org.slf4j.LoggerFactory;
   * It automatically responds to incoming calls and sends back
   * the received RTP streams.
   */
-public class Echo extends RegisteringMultipleUAS {
+public class EchoUserAgent extends RegisteringMultipleUAS {
 	
-	private static final org.slf4j.Logger LOG = LoggerFactory.getLogger(Echo.class);
+	private static final org.slf4j.Logger LOG = LoggerFactory.getLogger(EchoUserAgent.class);
 
 	/** Maximum life time (call duration) in seconds */
 	public static int MAX_LIFE_TIME=600;
@@ -76,9 +76,9 @@ public class Echo extends RegisteringMultipleUAS {
 	private final StreamerFactory _streamerFactory;
 
 	/** 
-	 * Creates a {@link Echo} service. 
+	 * Creates a {@link EchoUserAgent} service. 
 	 */
-	public Echo(SipProvider sip_provider, StreamerFactory streamerFactory, UAConfig uaConfig, PortPool portPool,
+	public EchoUserAgent(SipProvider sip_provider, StreamerFactory streamerFactory, UAConfig uaConfig, PortPool portPool,
 			boolean force_reverse_route, ServiceOptions serviceConfig) {
 		super(sip_provider,portPool, uaConfig, serviceConfig);
 		_streamerFactory = streamerFactory;
@@ -160,7 +160,7 @@ public class Echo extends RegisteringMultipleUAS {
 		sipConfig.normalize();
 		uaConfig.normalize(sipConfig);
 		
-		new Echo(new SipProvider(sipConfig, new ConfiguredScheduler(schedulerConfig)),new DelayedStreamerFactory(1000),uaConfig,portConfig.createPool(), config.forceReverseRoute, serviceConfig);
+		new EchoUserAgent(new SipProvider(sipConfig, new ConfiguredScheduler(schedulerConfig)),new DelayedStreamerFactory(1000),uaConfig,portConfig.createPool(), config.forceReverseRoute, serviceConfig);
 
 		// Prompt before exit
 		if (config.prompt) {

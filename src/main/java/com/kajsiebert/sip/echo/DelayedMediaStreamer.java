@@ -1,4 +1,4 @@
-package com.kajsiebert.sip;
+package com.kajsiebert.sip.echo;
 
 import org.mjsip.media.MediaStreamer;
 import org.mjsip.media.FlowSpec;
