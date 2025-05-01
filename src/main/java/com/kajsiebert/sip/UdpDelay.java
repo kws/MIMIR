@@ -33,7 +33,7 @@ import org.zoolu.net.UdpSocket;
   * It receives UDP packets at a local port and relays them toward a remote UDP socket
   * (destination address/port).
   */
-public class UdpRelay extends Thread {
+public class UdpDelay extends Thread {
 	
 	// The maximum IP packet size
 	//public static final int MAX_PKT_SIZE=2000;
@@ -56,11 +56,24 @@ public class UdpRelay extends Thread {
 	/** Maximum time that the UDP relay remains active without receiving UDP datagrams (in seconds) */
 	int alive_to=60; // 1min 
 	/** UdpRelay listener */
-	UdpRelayListener listener;   
+	UdpDelayListener listener;   
+
+	/** Queue for storing packets */
+	private java.util.concurrent.BlockingQueue<DelayedPacket> packetQueue;
+	/** Queue processor thread */
+	private Thread queueProcessor;
+	/** Queue size */
+	private static final int QUEUE_SIZE = 100;
+	/** Delay in milliseconds */
+	private int delayMs = 1000; // Default 1 second delay
+	/** Silence packet data */
+	private byte[] silenceData;
+	/** Socket for sending packets */
+	private UdpSocket socket;
 	  
 	/** Creates a new UDP relay and starts it.
 	  * <p> The UdpRelay remains active until method halt() is called. */
-	public UdpRelay(int local_port, String dest_addr, int dest_port, UdpRelayListener listener) {
+	public UdpDelay(int local_port, String dest_addr, int dest_port, UdpDelayListener listener) {
 		init(local_port,dest_addr,dest_port,0,listener);
 		start();
 	}
@@ -68,13 +81,13 @@ public class UdpRelay extends Thread {
 	/** Creates a new UDP relay and starts it.
 	  * <p> The UdpRelay will automatically stop after <i>alive_time</i> seconds
 	  *     of idle time (i.e. without receiving UDP datagrams) */
-	public UdpRelay(int local_port, String dest_addr, int dest_port, int alive_time, UdpRelayListener listener) {
+	public UdpDelay(int local_port, String dest_addr, int dest_port, int alive_time, UdpDelayListener listener) {
 		init(local_port,dest_addr,dest_port,alive_time,listener);
 		start();
 	}
 	 
 	/** Inits a new UDP relay */
-	private void init(int local_port, String dest_addr, int dest_port, int alive_time, UdpRelayListener listener) {
+	private void init(int local_port, String dest_addr, int dest_port, int alive_time, UdpDelayListener listener) {
 		this.local_port=local_port;     
 		this.dest_addr=new IpAddress(dest_addr);
 		this.dest_port=dest_port;
@@ -83,6 +96,9 @@ public class UdpRelay extends Thread {
 		src_addr=new IpAddress("0.0.0.0");
 		src_port=0;
 		stop=false;
+		this.packetQueue = new java.util.concurrent.LinkedBlockingQueue<>(QUEUE_SIZE);
+		this.silenceData = new byte[MAX_PKT_SIZE];
+		java.util.Arrays.fill(silenceData, (byte)0);
 	}
 
 	/** Gets the local receiver/sender port */
@@ -101,13 +117,13 @@ public class UdpRelay extends Thread {
 	}*/
 
 	/** Sets a new destination address */
-	public UdpRelay setDestAddress(String dest_addr) {
+	public UdpDelay setDestAddress(String dest_addr) {
 		this.dest_addr=new IpAddress(dest_addr);
 		return this;
 	}
 
 	/** Sets a new destination port */
-	public UdpRelay setDestPort(int dest_port) {
+	public UdpDelay setDestPort(int dest_port) {
 		this.dest_port=dest_port;
 		return this;
 	}
@@ -119,7 +135,19 @@ public class UdpRelay extends Thread {
 
 	/** Stops the UDP relay */
 	public void halt() {
-		stop=true;
+		stop = true;
+		if (queueProcessor != null) {
+			queueProcessor.interrupt();
+			try {
+				queueProcessor.join();
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
+		}
+		if (socket != null) {
+			socket.close();
+			socket = null;
+		}
 	}
 
 	/** Sets the maximum time that the UDP relay can remain active after been halted */
@@ -131,47 +159,83 @@ public class UdpRelay extends Thread {
 	public int getSoTimeout() {
 		return socket_to;
 	}
-		 
-	/** Redirect packets received from remote source addr/port to destination addr/port  */
+
+	/** Sets the delay in milliseconds */
+	public void setDelay(int delayMs) {
+		this.delayMs = delayMs;
+	}
+
+	/** Gets the current delay in milliseconds */
+	public int getDelay() {
+		return delayMs;
+	}
+
+	/** Process the queue with delay */
+	private void processQueue() {
+		while (!stop) {
+			try {
+				DelayedPacket delayedPacket = packetQueue.take();
+				long currentTime = System.currentTimeMillis();
+				long waitTime = delayedPacket.timestamp + delayMs - currentTime;
+				
+				if (waitTime > 0) {
+					Thread.sleep(waitTime);
+				}
+				
+				// Send the delayed packet
+				UdpPacket sendPacket = new UdpPacket(delayedPacket.data, delayedPacket.data.length);
+				sendPacket.setIpAddress(dest_addr);
+				sendPacket.setPort(dest_port);
+				socket.send(sendPacket);
+			} catch (InterruptedException e) {
+				if (stop) break;
+				Thread.currentThread().interrupt();
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
+		}
+	}
+
 	@Override
 	public void run() {
-		//System.out.println("DEBUG: starting UdpRelay "+toString()+" (it expires after "+alive_to+" sec)");     
-		try (UdpSocket socket=new UdpSocket(local_port)) {
+		try {
+			socket = new UdpSocket(local_port);
 			byte []buf=new byte[MAX_PKT_SIZE];
-									
 			socket.setSoTimeout(socket_to);
-			// datagram packet
 			UdpPacket packet=new UdpPacket(buf, buf.length);
 			
-			// convert alive_to in milliseconds
 			long keepalive_to=((1000)*(long)alive_to)-socket_to;
-			
-			// end time
 			long expire=System.currentTimeMillis()+keepalive_to;
-			// whether reset the receiver
-			//boolean reset=true;
-			
+
+			// Start the queue processor thread
+			queueProcessor = new Thread(this::processQueue);
+			queueProcessor.start();
+
 			while(!stop) {
-				// non-blocking receiver
 				try {
 					socket.receive(packet);           
 				}
 				catch (InterruptedIOException ie) {
-					// if expired, stop relaying
 					if (alive_to>0 && System.currentTimeMillis()>expire) halt();
 					continue;
 				}
-				// check whether the source address and port are changed
+				
 				if (src_port!=packet.getPort() || !src_addr.equals(packet.getIpAddress())) {
 					src_port=packet.getPort();
 					src_addr=packet.getIpAddress();
 					if (listener!=null) listener.onUdpRelaySourceChanged(this,src_addr.toString(),src_port);
 				}
-				// relay
-				packet.setIpAddress(dest_addr);
-				packet.setPort(dest_port);
-				socket.send(packet);
-				// reset
+
+				// Copy packet data and add to queue with timestamp
+				byte[] packetData = new byte[packet.getLength()];
+				System.arraycopy(packet.getData(), 0, packetData, 0, packet.getLength());
+				try {
+					packetQueue.put(new DelayedPacket(packetData, System.currentTimeMillis()));
+				} catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+					break;
+				}
+
 				packet=new UdpPacket(buf, buf.length);
 				expire=System.currentTimeMillis()+keepalive_to;
 			}
@@ -180,15 +244,23 @@ public class UdpRelay extends Thread {
 		}
 		catch (Exception e) { e.printStackTrace(); } 
 	}
-	
-	
+
+	/** Class to hold packet data and timestamp */
+	private static class DelayedPacket {
+		final byte[] data;
+		final long timestamp;
 		
+		DelayedPacket(byte[] data, long timestamp) {
+			this.data = data;
+			this.timestamp = timestamp;
+		}
+	}
+	
 	/** Gets a String representation of the Object */
 	@Override
 	public String toString() {
 		return "localhost:"+Integer.toString(local_port)+"-->"+dest_addr+":"+dest_port;
 	}
-
 
 	// ********************************** MAIN *********************************
 
@@ -208,7 +280,8 @@ public class UdpRelay extends Thread {
 		int alive_time=0;
 		if (args.length>3) alive_time=Integer.parseInt(args[3]);
 		
-		new UdpRelay(local_port,remote_address,remote_port,alive_time,null);
+		new UdpDelay(local_port,remote_address,remote_port,alive_time,null);
 	}
+
 }
  

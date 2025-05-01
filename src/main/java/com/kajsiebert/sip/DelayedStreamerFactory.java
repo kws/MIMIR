@@ -1,6 +1,5 @@
 package com.kajsiebert.sip;
 
-import com.kajsiebert.sip.LoopbackMediaStreamer;
 
 import java.util.concurrent.Executor;
 
@@ -25,6 +24,6 @@ public final class DelayedStreamerFactory implements StreamerFactory {
     
     @Override
     public MediaStreamer createMediaStreamer(Executor executor, FlowSpec flow_spec) {
-        return new LoopbackMediaStreamer(flow_spec, delayMs);
+        return new DelayedMediaStreamer(flow_spec, delayMs);
     }
 } 
