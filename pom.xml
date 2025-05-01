@@ -15,8 +15,6 @@
     </properties>
 
     <dependencies>
-        <!-- mjSIP source is included directly in the project -->
-
         <!-- SLF4J API -->
         <dependency>
             <groupId>org.slf4j</groupId>
@@ -38,16 +36,21 @@
             <version>2.33</version>
         </dependency>
 
-        <dependency>	
+        <!-- Local mjSIP dependencies -->
+        <dependency>
             <groupId>org.mjsip</groupId>
             <artifactId>mjsip-ua</artifactId>
-            <version>2.0.0</version>
+            <version>2.0.6-SNAPSHOT</version>
+            <scope>system</scope>
+            <systemPath>${project.basedir}/lib/mjSIP/mjsip-ua/target/mjsip-ua-2.0.6-SNAPSHOT.jar</systemPath>
         </dependency>
 
-        <dependency>	
+        <dependency>
             <groupId>org.mjsip</groupId>
             <artifactId>mjsip-server</artifactId>
-            <version>2.0.0</version>
+            <version>2.0.6-SNAPSHOT</version>
+            <scope>system</scope>
+            <systemPath>${project.basedir}/lib/mjSIP/mjsip-server/target/mjsip-server-2.0.6-SNAPSHOT.jar</systemPath>
         </dependency>
 
     </dependencies>
@@ -70,7 +73,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>com.kajsiebert.sip.Main</mainClass>
+                            <mainClass>com.kajsiebert.sip.SimpleMain</mainClass>
                         </manifest>
                     </archive>
                     <descriptorRefs>
@@ -89,18 +92,4 @@
             </plugin>
         </plugins>
     </build>
-
-    <repositories>
-        <repository>
-            <id>github</id>
-            <name>GitHub haumacher/mjSIP Apache Maven Packages</name>
-            <url>https://maven.pkg.github.com/haumacher/mjSIP</url>
-            <releases>
-                <enabled>true</enabled>
-            </releases>
-            <snapshots>
-                <enabled>false</enabled>
-            </snapshots>
-        </repository>
-    </repositories>    
 </project>
