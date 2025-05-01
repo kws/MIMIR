@@ -51,7 +51,6 @@ import org.mjsip.ua.UAConfig;
 import org.mjsip.ua.UserAgent;
 import org.mjsip.ua.UserAgentListener;
 import org.mjsip.ua.UserAgentListenerAdapter;
-import org.mjsip.ua.streamer.LoopbackStreamerFactory;
 import org.mjsip.ua.streamer.StreamerFactory;
 import org.slf4j.LoggerFactory;
 
@@ -161,7 +160,7 @@ public class Echo extends RegisteringMultipleUAS {
 		sipConfig.normalize();
 		uaConfig.normalize(sipConfig);
 		
-		new Echo(new SipProvider(sipConfig, new ConfiguredScheduler(schedulerConfig)),new LoopbackStreamerFactory(),uaConfig,portConfig.createPool(), config.forceReverseRoute, serviceConfig);
+		new Echo(new SipProvider(sipConfig, new ConfiguredScheduler(schedulerConfig)),new DelayedStreamerFactory(1000),uaConfig,portConfig.createPool(), config.forceReverseRoute, serviceConfig);
 
 		// Prompt before exit
 		if (config.prompt) {
