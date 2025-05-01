@@ -23,6 +23,7 @@ public class OpenAIRealtimeReceiver extends Thread {
     private final AudioQueues audioQueues;
     private WebSocket webSocket;
     private boolean sessionCreated = false;
+    private boolean readyToSend = false;
 
     public OpenAIRealtimeReceiver(AudioQueues audioQueues) {
         this.audioQueues = audioQueues;
@@ -53,44 +54,67 @@ public class OpenAIRealtimeReceiver extends Thread {
         return webSocket;
     }
 
+    public boolean isReadyToSend() {
+        return readyToSend;
+    }
+
     private class WSListener implements WebSocket.Listener {
+        private StringBuilder messageBuilder = new StringBuilder();
+
         @Override
         public void onOpen(WebSocket webSocket) {
             LOG.info("WebSocket connection opened");
             OpenAIRealtimeReceiver.this.webSocket = webSocket;
-            webSocket.request(1);
+            webSocket.request(10);
         }
 
         @Override
         public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
             try {
-                LOG.info("Received text data: {}", data);   
-                ObjectNode msg = (ObjectNode) mapper.readTree(data.toString());
-                String type = msg.get("type").asText();
+                messageBuilder.append(data);
+                
+                if (last) {
+                    String completeMessage = messageBuilder.toString();
+                    LOG.debug("Received complete message length: {}", completeMessage.length());
+                    
+                    ObjectNode msg = (ObjectNode) mapper.readTree(completeMessage);
+                    String type = msg.get("type").asText();
 
-                if ("session.created".equals(type) && !sessionCreated) {
-                    sessionCreated = true;
-                    sendSessionConfig();
-                }
+                    if ("session.created".equals(type) && !sessionCreated) {
+                        sessionCreated = true;
+                        sendSessionConfig();
+                    }
 
-                if ("response.audio.delta".equals(type) && msg.has("delta")) {
-                    byte[] audioBytes = Base64.getDecoder().decode(msg.get("delta").asText());
-                    audioQueues.getInputAudioQueue().put(audioBytes);
-                }
+                    if ("session.updated".equals(type)) {
+                        readyToSend = true;
+                        sendCreateResponse();
+                    }
 
-                if ("response.audio_transcript.delta".equals(type)) {
-                    LOG.info("AI: {}", msg.get("delta").asText());
-                }
+                    if ("response.audio.delta".equals(type) && msg.has("delta")) {
+                        byte[] audioBytes = Base64.getDecoder().decode(msg.get("delta").asText());
+                        audioQueues.putOpenAIFrame(audioBytes);
+                    }
 
-                if ("error".equals(type)) {
-                    LOG.error("Error: {}", msg.toPrettyString());
+                    if ("response.audio_transcript.delta".equals(type)) {
+                        LOG.info("AI: {}", msg.get("delta").asText());
+                    }
+
+                    if ("error".equals(type)) {
+                        LOG.error("Error: {}", msg.toPrettyString());
+                    }
+
+                    // Clear the builder for the next message
+                    messageBuilder.setLength(0);
                 }
 
             } catch (Exception e) {
                 LOG.error("Failed to handle message: {}", e.getMessage());
+                LOG.debug("Message content: {}", data);
+                // Clear the builder on error
+                messageBuilder.setLength(0);
             }
 
-            webSocket.request(1);
+            webSocket.request(10);
             return CompletableFuture.completedFuture(null);
         }
 
@@ -128,5 +152,12 @@ public class OpenAIRealtimeReceiver extends Thread {
         session.putArray("modalities").add("audio").add("text");
 
         webSocket.sendText(config.toString(), true);
+    }
+
+    private void sendCreateResponse() {
+        ObjectNode createResponse = mapper.createObjectNode();
+        createResponse.put("type", "response.create");
+
+        webSocket.sendText(createResponse.toString(), true);
     }
 } 

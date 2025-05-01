@@ -31,7 +31,12 @@ public class OpenAIRealtimeSender extends Thread {
     public void run() {
         while (running) {
             try {
-                byte[] audio = audioQueues.getOutputAudioQueue().take();
+                while (!receiver.isReadyToSend()) {
+                    LOG.info("Not ready to send, waiting for receiver to be ready");    
+                    Thread.sleep(500);
+                }   
+
+                byte[] audio = audioQueues.getInputAudioQueue().take();
                 String encoded = Base64.getEncoder().encodeToString(audio);
 
                 ObjectNode audioMsg = mapper.createObjectNode();
@@ -40,8 +45,12 @@ public class OpenAIRealtimeSender extends Thread {
 
                 WebSocket webSocket = receiver.getWebSocket();
                 if (webSocket != null) {
-                    webSocket.sendText(audioMsg.toString(), true);
-                    LOG.debug("Sent audio data of length: {}", audio.length);
+                    webSocket.sendText(audioMsg.toString(), true).thenAccept(v -> {
+                        // LOG.info("Sent audio data of length: {}", audioMsg.toString());
+                    }).exceptionally(e -> {
+                        LOG.error("Error sending audio data", e);
+                        return null;
+                    });
                 } else {
                     LOG.warn("WebSocket not connected, dropping audio data");
                 }

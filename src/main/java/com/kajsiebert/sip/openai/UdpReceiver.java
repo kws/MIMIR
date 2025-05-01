@@ -34,7 +34,7 @@ public class UdpReceiver extends Thread {
                 System.arraycopy(packet.getData(), 0, receivedData, 0, packet.getLength());
                 
                 // Put the data into the input queue
-                audioQueues.getInputAudioQueue().put(receivedData);
+                audioQueues.putRTPFrame(receivedData);
                 
                 // Reset the packet for next receive
                 packet = new UdpPacket(buffer, buffer.length);

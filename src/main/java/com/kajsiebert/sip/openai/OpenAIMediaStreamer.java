@@ -2,6 +2,7 @@ package com.kajsiebert.sip.openai;
 
 import org.mjsip.media.FlowSpec;
 import org.mjsip.media.MediaStreamer;
+import org.mjsip.media.MediaSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -17,8 +18,11 @@ public class OpenAIMediaStreamer implements MediaStreamer {
 
     public OpenAIMediaStreamer(FlowSpec flow_spec) {
         try {
+            // Get and log the media format details
+            MediaSpec mediaSpec = flow_spec.getMediaSpec();
+
             // Create the audio queues for passing data between components
-            audioQueues = new AudioQueues();
+            audioQueues = new AudioQueues(mediaSpec);
 
             // Create the OpenAI components
             openaiReceiver = new OpenAIRealtimeReceiver(audioQueues);
