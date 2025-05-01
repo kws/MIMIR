@@ -19,13 +19,13 @@
  * Luca Veltri (luca.veltri@unipr.it)
  */
 
-package com.kajsiebert.sip.examples;
-
+package com.kajsiebert.sip;
 
 
 import org.kohsuke.args4j.Option;
 import org.mjsip.config.OptionParser;
 import org.mjsip.media.MediaDesc;
+import org.mjsip.media.MediaSpec;
 import org.mjsip.pool.PortConfig;
 import org.mjsip.pool.PortPool;
 import org.mjsip.sip.address.NameAddress;
@@ -43,6 +43,7 @@ import org.mjsip.sip.transaction.TransactionServer;
 import org.mjsip.time.ConfiguredScheduler;
 import org.mjsip.time.SchedulerConfig;
 import org.mjsip.ua.MediaAgent;
+import org.mjsip.ua.MediaConfig;
 import org.mjsip.ua.RegisteringMultipleUAS;
 import org.mjsip.ua.ServiceConfig;
 import org.mjsip.ua.ServiceOptions;
@@ -116,10 +117,20 @@ public class Echo extends RegisteringMultipleUAS {
 	
 	@Override
 	protected UserAgentListener createCallHandler(SipMessage msg) {
+		MediaConfig mediaConfig = new MediaConfig();
+		MediaSpec[] mediaSpecs = new MediaSpec[] {
+			new MediaSpec(0, "PCMU", 8000, 1, 160),  // G.711 u-law
+			new MediaSpec(8, "PCMA", 8000, 1, 160)   // G.711 A-law
+		};
+		MediaDesc[] mediaDescs = new MediaDesc[] {
+			new MediaDesc("audio", 0, "RTP/AVP", mediaSpecs)
+		};
+		mediaConfig.setMediaDescs(mediaDescs);
+
 		return new UserAgentListenerAdapter() {
 			@Override
 			public void onUaIncomingCall(UserAgent ua, NameAddress callee, NameAddress caller, MediaDesc[] media_descs) {
-				ua.accept(new MediaAgent(media_descs, _streamerFactory));
+				ua.accept(new MediaAgent(mediaConfig.getMediaDescs(), _streamerFactory));
 				LOG.info("incoming call accepted");
 			}
 		};

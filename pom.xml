@@ -69,7 +69,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>com.kajsiebert.sip.EchoMain</mainClass>
+                            <mainClass>com.kajsiebert.sip.Echo</mainClass>
                         </manifest>
                     </archive>
                     <descriptorRefs>
