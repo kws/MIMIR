@@ -1,4 +1,5 @@
 package com.kajsiebert.sip;
+import com.kajsiebert.sip.examples.Echo;
 
 import org.mjsip.config.OptionParser;
 import org.mjsip.sip.provider.SipConfig;
@@ -69,7 +70,7 @@ public class EchoMain {
             LoopbackStreamerFactory streamerFactory = new LoopbackStreamerFactory();
             
             // Create and start echo server
-            new org.mjsip.examples.Echo(
+            new Echo(
                 sipProvider,
                 streamerFactory,
                 uaConfig,

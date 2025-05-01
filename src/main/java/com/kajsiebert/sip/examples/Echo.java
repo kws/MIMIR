@@ -19,7 +19,7 @@
  * Luca Veltri (luca.veltri@unipr.it)
  */
 
-package org.mjsip.examples;
+package com.kajsiebert.sip.examples;
 
 
 

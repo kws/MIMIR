@@ -40,17 +40,13 @@
         <dependency>
             <groupId>org.mjsip</groupId>
             <artifactId>mjsip-ua</artifactId>
-            <version>2.0.6-SNAPSHOT</version>
-            <scope>system</scope>
-            <systemPath>${project.basedir}/lib/mjSIP/mjsip-ua/target/mjsip-ua-2.0.6-SNAPSHOT.jar</systemPath>
+            <version>2.0.5</version>
         </dependency>
 
         <dependency>
             <groupId>org.mjsip</groupId>
             <artifactId>mjsip-server</artifactId>
-            <version>2.0.6-SNAPSHOT</version>
-            <scope>system</scope>
-            <systemPath>${project.basedir}/lib/mjSIP/mjsip-server/target/mjsip-server-2.0.6-SNAPSHOT.jar</systemPath>
+            <version>2.0.5</version>
         </dependency>
 
     </dependencies>
@@ -92,4 +88,18 @@
             </plugin>
         </plugins>
     </build>
+
+    <repositories>
+    <repository>
+        <id>github</id>
+        <name>GitHub haumacher/mjSIP Apache Maven Packages</name>
+        <url>https://maven.pkg.github.com/haumacher/mjSIP</url>
+        <releases>
+            <enabled>true</enabled>
+        </releases>
+        <snapshots>
+            <enabled>false</enabled>
+        </snapshots>
+    </repository>
+</repositories>
 </project>
