@@ -22,11 +22,11 @@
             <version>1.7.36</version>
         </dependency>
 
-        <!-- SLF4J Simple binding for logging -->
+        <!-- Logback implementation -->
         <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-simple</artifactId>
-            <version>1.7.36</version>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>1.2.11</version>
         </dependency>
         
         <!-- Args4J - Command line parsing library used by mjSIP -->
@@ -73,7 +73,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>com.kajsiebert.sip.SimpleMain</mainClass>
+                            <mainClass>com.kajsiebert.sip.EchoMain</mainClass>
                         </manifest>
                     </archive>
                     <descriptorRefs>
