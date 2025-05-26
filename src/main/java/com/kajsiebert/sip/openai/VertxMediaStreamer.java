@@ -14,6 +14,8 @@ import org.mjsip.media.FlowSpec;
 import org.mjsip.media.MediaStreamer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 import java.util.Base64;
 
@@ -31,11 +33,12 @@ public class VertxMediaStreamer implements MediaStreamer {
     private static final int RTP_PACKET_SIZE = 160; // 20ms of G.711 audio at 8kHz
     private static final int RTP_HEADER_SIZE = 12;
     private static final long PACKET_INTERVAL_MS = 20; // 20ms between packets
-    private Buffer audioBuffer = Buffer.buffer(2048); // Pre-allocate with reasonable size
+    private Buffer audioBuffer = Buffer.buffer(2048);
     private int sequenceNumber = 0;
     private long timestamp = 0;
     private static final int SSRC = 0x12345678; // Random SSRC identifier
-    private long lastPacketTime = 0;
+    private final Queue<Buffer> rtpQueue = new ConcurrentLinkedQueue<>();
+    private long periodicTimerId = -1;
 
     private Buffer createRtpPacket(byte[] payload) {
         Buffer packet = Buffer.buffer(RTP_HEADER_SIZE + payload.length);
@@ -63,22 +66,8 @@ public class VertxMediaStreamer implements MediaStreamer {
     }
 
     private void sendRtpPacket(byte[] payload) {
-        long now = System.currentTimeMillis();
-        long timeSinceLastPacket = now - lastPacketTime;
-        
-        if (timeSinceLastPacket < PACKET_INTERVAL_MS) {
-            // Schedule the packet to be sent after the appropriate delay
-            vertx.setTimer(PACKET_INTERVAL_MS - timeSinceLastPacket, id -> {
-                Buffer rtpPacket = createRtpPacket(payload);
-                udpSocket.send(rtpPacket, flowSpec.getRemotePort(), flowSpec.getRemoteAddress(), snd -> {});
-                lastPacketTime = System.currentTimeMillis();
-            });
-        } else {
-            // Send immediately if we're behind schedule
-            Buffer rtpPacket = createRtpPacket(payload);
-            udpSocket.send(rtpPacket, flowSpec.getRemotePort(), flowSpec.getRemoteAddress(), snd -> {});
-            lastPacketTime = now;
-        }
+        Buffer rtpPacket = createRtpPacket(payload);
+        rtpQueue.offer(rtpPacket);
     }
 
     public VertxMediaStreamer(Vertx vertx, FlowSpec flowSpec) {
@@ -151,6 +140,7 @@ public class VertxMediaStreamer implements MediaStreamer {
                     case "session.updated":
                         readyToSend = true;
                         sendCreateResponse();
+                        startPeriodicSend();
                         break;
                     case "response.audio.delta":
                         String deltaB64 = msg.getString("delta");
@@ -200,8 +190,23 @@ public class VertxMediaStreamer implements MediaStreamer {
         webSocket.writeTextMessage(msg.encode());
     }
 
+    private void startPeriodicSend() {
+        if (periodicTimerId == -1) {
+            periodicTimerId = vertx.setPeriodic(PACKET_INTERVAL_MS, id -> {
+                Buffer pkt = rtpQueue.poll();
+                if (pkt != null) {
+                    udpSocket.send(pkt, flowSpec.getRemotePort(), flowSpec.getRemoteAddress(), snd -> {});
+                }
+            });
+        }
+    }
+
     @Override
     public boolean halt() {
+        if (periodicTimerId != -1) {
+            vertx.cancelTimer(periodicTimerId);
+            periodicTimerId = -1;
+        }
         if (webSocket != null) webSocket.close();
         if (udpSocket != null) udpSocket.close();
         // do not close shared Vert.x instance here
