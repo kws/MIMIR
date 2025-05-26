@@ -16,6 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.PriorityQueue;
 
 import java.util.Base64;
 
@@ -39,6 +40,26 @@ public class VertxMediaStreamer implements MediaStreamer {
     private static final int SSRC = 0x12345678; // Random SSRC identifier
     private final Queue<Buffer> rtpQueue = new ConcurrentLinkedQueue<>();
     private long periodicTimerId = -1;
+    private static final int BATCH_MS = 250;
+    private static final int BATCH_BYTES = 8000 * BATCH_MS / 1000;
+    private final PriorityQueue<JitterPacket> jitterBuffer = new PriorityQueue<>();
+    private int jitterBufferBytes = 0;
+    private long audioFlushTimerId = -1;
+
+    private static class JitterPacket implements Comparable<JitterPacket> {
+        final long timestamp;
+        byte[] payload;
+
+        JitterPacket(long timestamp, byte[] payload) {
+            this.timestamp = timestamp;
+            this.payload = payload;
+        }
+
+        @Override
+        public int compareTo(JitterPacket other) {
+            return Long.compare(this.timestamp, other.timestamp);
+        }
+    }
 
     private Buffer createRtpPacket(byte[] payload) {
         Buffer packet = Buffer.buffer(RTP_HEADER_SIZE + payload.length);
@@ -84,13 +105,17 @@ public class VertxMediaStreamer implements MediaStreamer {
             if (ar.succeeded()) {
                 LOG.info("Vert.x UDP listening on port {}", flowSpec.getLocalPort());
                 udpSocket.handler(packet -> {
-                    byte[] data = packet.data().getBytes();
                     if (webSocket != null && readyToSend) {
-                        String audioB64 = Base64.getEncoder().encodeToString(data);
-                        JsonObject msg = new JsonObject()
-                            .put("type", "input_audio_buffer.append")
-                            .put("audio", audioB64);
-                        webSocket.writeTextMessage(msg.encode());
+                        Buffer buf = packet.data();
+                        if (buf.length() > RTP_HEADER_SIZE) {
+                            long ts = buf.getInt(4) & 0xffffffffL;
+                            byte[] payload = buf.getBytes(RTP_HEADER_SIZE, buf.length());
+                            jitterBuffer.offer(new JitterPacket(ts, payload));
+                            jitterBufferBytes += payload.length;
+                            if (jitterBufferBytes >= BATCH_BYTES) {
+                                flushAudioBuffer();
+                            }
+                        }
                     }
                 });
             } else {
@@ -141,6 +166,7 @@ public class VertxMediaStreamer implements MediaStreamer {
                         readyToSend = true;
                         sendCreateResponse();
                         startPeriodicSend();
+                        startAudioFlush();
                         break;
                     case "response.audio.delta":
                         String deltaB64 = msg.getString("delta");
@@ -198,6 +224,44 @@ public class VertxMediaStreamer implements MediaStreamer {
                     udpSocket.send(pkt, flowSpec.getRemotePort(), flowSpec.getRemoteAddress(), snd -> {});
                 }
             });
+        }
+    }
+
+    private void startAudioFlush() {
+        if (audioFlushTimerId == -1) {
+            audioFlushTimerId = vertx.setPeriodic(BATCH_MS, id -> {
+                if (webSocket != null && readyToSend) {
+                    flushAudioBuffer();
+                }
+            });
+        }
+    }
+
+    private void flushAudioBuffer() {
+        while (jitterBufferBytes >= BATCH_BYTES) {
+            Buffer combined = Buffer.buffer();
+            int sentBytes = 0;
+            while (sentBytes < BATCH_BYTES && !jitterBuffer.isEmpty()) {
+                JitterPacket pkt = jitterBuffer.peek();
+                int len = pkt.payload.length;
+                if (sentBytes + len <= BATCH_BYTES) {
+                    pkt = jitterBuffer.poll();
+                    combined.appendBytes(pkt.payload);
+                    sentBytes += len;
+                    jitterBufferBytes -= len;
+                } else {
+                    int remaining = BATCH_BYTES - sentBytes;
+                    combined.appendBytes(pkt.payload, 0, remaining);
+                    byte[] rem = new byte[len - remaining];
+                    System.arraycopy(pkt.payload, remaining, rem, 0, rem.length);
+                    pkt.payload = rem;
+                    sentBytes += remaining;
+                    jitterBufferBytes -= remaining;
+                }
+            }
+            String audioB64 = Base64.getEncoder().encodeToString(combined.getBytes());
+            JsonObject msg = new JsonObject().put("type", "input_audio_buffer.append").put("audio", audioB64);
+            webSocket.writeTextMessage(msg.encode());
         }
     }
 
