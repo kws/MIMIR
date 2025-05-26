@@ -52,7 +52,7 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
         MediaConfig mediaConfig = new MediaConfig();
 		MediaSpec[] mediaSpecs = new MediaSpec[] {
 			new MediaSpec(0, "PCMU", 8000, 1, 160),  // G.711 u-law
-			new MediaSpec(8, "PCMA", 8000, 1, 160)   // G.711 A-law
+			// new MediaSpec(8, "PCMA", 8000, 1, 160)   // G.711 A-law
 		};
 		MediaDesc[] mediaDescs = new MediaDesc[] {
 			new MediaDesc("audio", 0, "RTP/AVP", mediaSpecs)

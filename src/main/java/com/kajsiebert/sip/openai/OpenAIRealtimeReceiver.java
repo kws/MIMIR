@@ -79,6 +79,7 @@ public class OpenAIRealtimeReceiver extends Thread {
                     
                     ObjectNode msg = (ObjectNode) mapper.readTree(completeMessage);
                     String type = msg.get("type").asText();
+                    LOG.debug("Received message type: {}", type);
 
                     if ("session.created".equals(type) && !sessionCreated) {
                         sessionCreated = true;
@@ -88,6 +89,14 @@ public class OpenAIRealtimeReceiver extends Thread {
                     if ("session.updated".equals(type)) {
                         readyToSend = true;
                         sendCreateResponse();
+                    }
+
+                    if ("response.created".equals(type)) {
+                        LOG.info("Response created: {}", msg.toPrettyString());
+                    }
+
+                    if ("response.done".equals(type)) {
+                        LOG.info("Response done: {}", msg.toPrettyString());
                     }
 
                     if ("response.audio.delta".equals(type) && msg.has("delta")) {
@@ -105,6 +114,8 @@ public class OpenAIRealtimeReceiver extends Thread {
 
                     // Clear the builder for the next message
                     messageBuilder.setLength(0);
+                } else {
+                    LOG.debug("Received partial message: {}", data);
                 }
 
             } catch (Exception e) {
@@ -143,7 +154,8 @@ public class OpenAIRealtimeReceiver extends Thread {
         ObjectNode session = config.putObject("session");
         session.put("instructions", "You're a friendly assistant. Say hi immediately in a cheerful way.");
         session.put("voice", "alloy");
-        session.put("output_audio_format", "pcm16");
+        session.put("input_audio_format", "g711_ulaw");
+        session.put("output_audio_format", "g711_ulaw");
 
         ObjectNode turnDetection = session.putObject("turn_detection");
         turnDetection.put("type", "server_vad");
@@ -151,6 +163,7 @@ public class OpenAIRealtimeReceiver extends Thread {
 
         session.putArray("modalities").add("audio").add("text");
 
+        LOG.debug("Sending session config: {}", config.toString());
         webSocket.sendText(config.toString(), true);
     }
 
@@ -158,6 +171,7 @@ public class OpenAIRealtimeReceiver extends Thread {
         ObjectNode createResponse = mapper.createObjectNode();
         createResponse.put("type", "response.create");
 
+        LOG.debug("Sending create response: {}", createResponse.toString());
         webSocket.sendText(createResponse.toString(), true);
     }
 } 

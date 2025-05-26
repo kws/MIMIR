@@ -48,7 +48,7 @@ public class UdpSender extends Thread {
                 packet.setPort(socketContext.getDestPort());
                 socketContext.getSocket().send(packet);
         
-                LOG.debug("Sent RTP packet: seq={}, timestamp={}, length={}", sequence, timestamp, rtpPacket.length);
+                LOG.debug("Sent RTP packet: seq={}, timestamp={}, length={} to {} port {}", sequence, timestamp, rtpPacket.length, socketContext.getDestAddress(), socketContext.getDestPort());
             } catch (Exception e) {
                 if (!running) break;
                 LOG.error("Error sending UDP packet", e);

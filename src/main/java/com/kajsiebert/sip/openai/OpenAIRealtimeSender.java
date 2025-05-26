@@ -46,7 +46,7 @@ public class OpenAIRealtimeSender extends Thread {
                 WebSocket webSocket = receiver.getWebSocket();
                 if (webSocket != null) {
                     webSocket.sendText(audioMsg.toString(), true).thenAccept(v -> {
-                        // LOG.info("Sent audio data of length: {}", audioMsg.toString());
+                        // LOG.info("Sent audio data of length: {}", audio.length);
                     }).exceptionally(e -> {
                         LOG.error("Error sending audio data", e);
                         return null;

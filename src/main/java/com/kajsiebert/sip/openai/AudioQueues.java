@@ -28,6 +28,8 @@ public class AudioQueues {
 
     private final BlockingQueue<byte[]> inputAudioQueue = new LinkedBlockingQueue<>(QUEUE_SIZE);
     private final BlockingQueue<byte[]> outputAudioQueue = new LinkedBlockingQueue<>(QUEUE_SIZE);
+    private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+    private long rtpTimestamp = 0;
 
     private final AudioCodec codec;
 
@@ -50,33 +52,61 @@ public class AudioQueues {
     }
 
     public void putRTPFrame(byte[] receivedData) throws InterruptedException {
-        byte[] data = codec.toPCM(receivedData);
-        inputAudioQueue.put(data);
+        // byte[] data = codec.toPCM(receivedData);
+        inputAudioQueue.put(receivedData);
     }
 
     public void putOpenAIFrame(byte[] receivedData) throws InterruptedException, IOException {
-        // Step 1: Downsample 16kHz to 8kHz PCM (still 16-bit signed LE)
-        byte[] pcm8kHz = naiveDownsample16kTo8k(receivedData);
-    
-        // Optional: Log first sample for sanity check
-        if (pcm8kHz.length >= 2) {
-            short s = ByteBuffer.wrap(pcm8kHz, 0, 2).order(ByteOrder.LITTLE_ENDIAN).getShort();
-            LOG.debug("First sample value (16-bit signed LE): {}", s);
+        LOG.debug("Received data length: {}", receivedData.length);
+
+        // 2) Append to our rolling buffer
+        buffer.write(receivedData);
+
+        byte[] buf = buffer.toByteArray();
+        int offset = 0;
+
+        // 3) While we have at least 160 bytes (20 ms @8 kHz), slice out one RTP packet
+        while (buf.length - offset >= 160) {
+            byte[] frame = new byte[160];
+            System.arraycopy(buf, offset, frame, 0, 160);
+            offset += 160;
+
+            // 4) Send that 160-byte frame in your RTP packet
+            // sendRtpPacket(frame, rtpTimestamp);
+            outputAudioQueue.put(frame);
+
+            // 5) Advance RTP timestamp by number of samples
+            rtpTimestamp += 160;
         }
-    
-        // Step 2: Chunk PCM into 320-byte (20ms) segments and encode each
-        for (int i = 0; i + 320 <= pcm8kHz.length; i += 320) {
-            byte[] pcmChunk = Arrays.copyOfRange(pcm8kHz, i, i + 320);  // 160 samples
-            byte[] g711Frame = codec.fromPCM(pcmChunk);                 // Should be 160 bytes
-    
-            if (g711Frame.length != 160) {
-                LOG.warn("Unexpected G.711 frame size: {}", g711Frame.length);
-                continue;
-            }
-    
-            // Step 3: Add to queue for RTP sending
-            outputAudioQueue.put(g711Frame);
+
+        // 6) Preserve any leftover bytes for next time
+        buffer.reset();
+        if (offset < buf.length) {
+            buffer.write(buf, offset, buf.length - offset);
         }
+
+        // // Step 1: Downsample 16kHz to 8kHz PCM (still 16-bit signed LE)
+        // byte[] pcm8kHz = naiveDownsample16kTo8k(receivedData);
+    
+        // // Optional: Log first sample for sanity check
+        // if (pcm8kHz.length >= 2) {
+        //     short s = ByteBuffer.wrap(pcm8kHz, 0, 2).order(ByteOrder.LITTLE_ENDIAN).getShort();
+        //     LOG.debug("First sample value (16-bit signed LE): {}", s);
+        // }
+    
+        // // Step 2: Chunk PCM into 320-byte (20ms) segments and encode each
+        // for (int i = 0; i + 320 <= pcm8kHz.length; i += 320) {
+        //     byte[] pcmChunk = Arrays.copyOfRange(pcm8kHz, i, i + 320);  // 160 samples
+        //     byte[] g711Frame = codec.fromPCM(pcmChunk);                 // Should be 160 bytes
+    
+        //     if (g711Frame.length != 160) {
+        //         LOG.warn("Unexpected G.711 frame size: {}", g711Frame.length);
+        //         continue;
+        //     }
+    
+        //     // Step 3: Add to queue for RTP sending
+        //     outputAudioQueue.put(g711Frame);
+        // }
     }
 
     public static byte[] resample16kTo8k(byte[] pcm16BitMono16kHz) throws IOException {
