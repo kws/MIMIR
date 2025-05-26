@@ -74,7 +74,9 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
                         return new VertxMediaStreamer(OpenAIRealtimeUserAgent.this.vertx, flow_spec);
                     }
                 };
-                ua.accept(new MediaAgent(mediaConfig.getMediaDescs(), streamerFactory));
+                // Defer accepting the call until the first OpenAI response audio is ready
+                VertxMediaStreamer.warmup(OpenAIRealtimeUserAgent.this.vertx)
+                    .onComplete(ar -> ua.accept(new MediaAgent(mediaConfig.getMediaDescs(), streamerFactory)));
             }
         };
     }

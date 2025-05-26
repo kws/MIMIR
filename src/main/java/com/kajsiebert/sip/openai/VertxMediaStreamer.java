@@ -46,9 +46,9 @@ public class VertxMediaStreamer implements MediaStreamer {
     private int jitterBufferBytes = 0;
     private long audioFlushTimerId = -1;
 
-    private String readInstructions() {
+    private static String readInstructions() {
         try {
-            return new String(getClass().getResourceAsStream("/bohr_instructions.txt").readAllBytes());
+            return new String(VertxMediaStreamer.class.getResourceAsStream("/bohr_instructions.txt").readAllBytes());
         } catch (Exception e) {
             LOG.error("Failed to read instructions file", e);
             return "You are playing the role of the famous scientist Niels Bohr.";
@@ -93,11 +93,6 @@ public class VertxMediaStreamer implements MediaStreamer {
         timestamp += payload.length;
         
         return packet;
-    }
-
-    private void sendRtpPacket(byte[] payload) {
-        Buffer rtpPacket = createRtpPacket(payload);
-        rtpQueue.offer(rtpPacket);
     }
 
     public VertxMediaStreamer(Vertx vertx, FlowSpec flowSpec) {
@@ -328,5 +323,67 @@ public class VertxMediaStreamer implements MediaStreamer {
         if (udpSocket != null) udpSocket.close();
         // do not close shared Vert.x instance here
         return true;
+    }
+    /**
+     * Warm up an OpenAI realtime session and wait until the first audio delta is received.
+     * Returns a Future that completes when the initial response audio is ready.
+     */
+    public static io.vertx.core.Future<Void> warmup(Vertx vertx) {
+        io.vertx.core.Promise<Void> promise = io.vertx.core.Promise.promise();
+        io.vertx.core.http.HttpClientOptions clientOpts = new HttpClientOptions()
+            .setProtocolVersion(HttpVersion.HTTP_1_1)
+            .setSsl(true);
+        io.vertx.core.http.HttpClient httpClient = vertx.createHttpClient(clientOpts);
+        String host = "api.openai.com";
+        int port = 443;
+        String uri = "/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17";
+        WebSocketConnectOptions wsOpts = new WebSocketConnectOptions()
+            .setHost(host)
+            .setPort(port)
+            .setURI(uri)
+            .addHeader("Authorization", "Bearer " + System.getenv("OPENAI_API_KEY"))
+            .addHeader("OpenAI-Beta", "realtime=v1");
+        httpClient.webSocket(wsOpts, wsRes -> {
+            if (wsRes.succeeded()) {
+                WebSocket ws = wsRes.result();
+                ws.frameHandler(frame -> {
+                    if (frame.isText()) {
+                        JsonObject msg = new JsonObject(frame.textData());
+                        String type = msg.getString("type");
+                        switch (type) {
+                            case "session.created":
+                                JsonObject session = new JsonObject()
+                                    .put("instructions", readInstructions())
+                                    .put("voice", "echo")
+                                    .put("input_audio_format", "g711_ulaw")
+                                    .put("output_audio_format", "g711_ulaw")
+                                    .put("input_audio_transcription", new JsonObject().put("model", "whisper-1"))
+                                    .put("turn_detection", new JsonObject().put("type", "server_vad").put("create_response", true).put("interrupt_response", true))
+                                    .put("modalities", new io.vertx.core.json.JsonArray().add("audio").add("text"));
+                                JsonObject cfg = new JsonObject().put("type", "session.update").put("session", session);
+                                ws.writeTextMessage(cfg.encode());
+                                break;
+                            case "session.updated":
+                                JsonObject createResp = new JsonObject()
+                                    .put("type", "response.create")
+                                    .put("response", new JsonObject().put("instructions", "Ring, ring. The phone is ringing. You pick it up and say: 'Hej, dette er Niels Bohr. Hvad kan jeg hjælpe dig med?'"));
+                                ws.writeTextMessage(createResp.encode());
+                                break;
+                            case "response.audio.delta":
+                                promise.tryComplete();
+                                ws.close();
+                                break;
+                            default:
+                                // ignore
+                        }
+                    }
+                });
+                ws.exceptionHandler(promise::tryFail);
+                ws.closeHandler(v -> promise.tryComplete());
+            } else {
+                promise.tryFail(wsRes.cause());
+            }
+        });
+        return promise.future();
     }
 }
