@@ -46,6 +46,15 @@ public class VertxMediaStreamer implements MediaStreamer {
     private int jitterBufferBytes = 0;
     private long audioFlushTimerId = -1;
 
+    private String readInstructions() {
+        try {
+            return new String(getClass().getResourceAsStream("/bohr_instructions.txt").readAllBytes());
+        } catch (Exception e) {
+            LOG.error("Failed to read instructions file", e);
+            return "You are playing the role of the famous scientist Niels Bohr.";
+        }
+    }
+
     private static class JitterPacket implements Comparable<JitterPacket> {
         final long timestamp;
         byte[] payload;
@@ -174,7 +183,7 @@ public class VertxMediaStreamer implements MediaStreamer {
                             byte[] audio = Base64.getDecoder().decode(deltaB64);
                             audioBuffer.appendBytes(audio);
                             
-                            // Send complete RTP packets
+                            // Queue complete RTP packets
                             while (audioBuffer.length() >= RTP_PACKET_SIZE) {
                                 byte[] payload = audioBuffer.getBytes(0, RTP_PACKET_SIZE);
                                 // Create a new buffer with remaining data
@@ -184,9 +193,43 @@ public class VertxMediaStreamer implements MediaStreamer {
                                 }
                                 audioBuffer = remaining;
                                 
-                                sendRtpPacket(payload);
+                                // Queue the packet instead of sending directly
+                                Buffer rtpPacket = createRtpPacket(payload);
+                                rtpQueue.offer(rtpPacket);
                             }
                         }
+                        break;
+                    case "response.audio_transcript.delta":
+                        String responseAudioTranscriptDelta = msg.getString("delta");
+                        LOG.info("WebSocket message type: {} - delta: {}", type, responseAudioTranscriptDelta);
+                        break;
+                    case "response.audio.done":
+                        LOG.info("WebSocket message type: {} - done", type);
+                        // Process any remaining audio data
+                        if (audioBuffer.length() > 0) {
+                            // Pad the remaining data to RTP_PACKET_SIZE with silence (0xFF for G.711 u-law)
+                            byte[] payload = new byte[RTP_PACKET_SIZE];
+                            byte[] remaining = audioBuffer.getBytes();
+                            System.arraycopy(remaining, 0, payload, 0, remaining.length);
+                            // Fill the rest with silence (0xFF for G.711 u-law)
+                            for (int i = remaining.length; i < RTP_PACKET_SIZE; i++) {
+                                payload[i] = (byte) 0xFF;
+                            }
+                            Buffer rtpPacket = createRtpPacket(payload);
+                            rtpQueue.offer(rtpPacket);
+                            audioBuffer = Buffer.buffer(); // Clear the buffer
+                        }
+                        break;
+                    case "input_audio_buffer.speech_started":
+                        LOG.info("WebSocket message type: {} - speech started", type);
+                        rtpQueue.clear();
+                        break;
+                    case "input_audio_buffer.speech_stopped":
+                        LOG.info("WebSocket message type: {} - speech stopped", type);
+                        break;
+                    case "conversation.item.input_audio_transcription.delta":
+                        String conversationItemInputAudioTranscriptDelta = msg.getString("delta");
+                        LOG.info("WebSocket message type: {} - delta: {}", type, conversationItemInputAudioTranscriptDelta);
                         break;
                     default:
                         LOG.debug("WebSocket message type: {}", type);
@@ -199,20 +242,30 @@ public class VertxMediaStreamer implements MediaStreamer {
 
     private void sendSessionConfig() {
         JsonObject session = new JsonObject()
-            .put("instructions", "You're a friendly assistant. Say hi immediately in a cheerful way.")
-            .put("voice", "alloy")
+            .put("instructions", readInstructions())
+            .put("voice", "echo")
             .put("input_audio_format", "g711_ulaw")
             .put("output_audio_format", "g711_ulaw")
+            .put("input_audio_transcription", new JsonObject()
+                .put("model", "whisper-1")
+            )
             .put("turn_detection", new JsonObject()
                 .put("type", "server_vad")
-                .put("create_response", true))
+                .put("create_response", true)
+                .put("interrupt_response", true)
+            )
             .put("modalities", new io.vertx.core.json.JsonArray().add("audio").add("text"));
         JsonObject cfg = new JsonObject().put("type", "session.update").put("session", session);
+        LOG.info("Sending session config: {}", cfg.encodePrettily());
         webSocket.writeTextMessage(cfg.encode());
     }
 
     private void sendCreateResponse() {
-        JsonObject msg = new JsonObject().put("type", "response.create");
+        JsonObject msg = new JsonObject()
+            .put("type", "response.create")
+            .put("response", new JsonObject()
+                .put("instructions", "Ring, ring. The phone is ringing. You pick it up and say: 'Hej, dette er Niels Bohr. Hvad kan jeg hjælpe dig med?'."));
+        LOG.info("Sending response create: {}", msg.encodePrettily());
         webSocket.writeTextMessage(msg.encode());
     }
 
