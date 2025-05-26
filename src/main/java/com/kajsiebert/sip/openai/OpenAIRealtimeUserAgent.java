@@ -28,6 +28,8 @@ import org.mjsip.ua.UserAgent;
 import org.mjsip.ua.UserAgentListener;
 import org.mjsip.ua.UserAgentListenerAdapter;
 import org.mjsip.ua.streamer.StreamerFactory;
+import io.vertx.core.Vertx;
+import com.kajsiebert.sip.openai.VertxMediaStreamer;
 
 
 public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
@@ -35,16 +37,20 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
     /** 
 	 * Creates a {@link OpenAIRealtimeUserAgent} service. 
 	 */
-	public OpenAIRealtimeUserAgent(
+    private final Vertx vertx;
+    
+    public OpenAIRealtimeUserAgent(
         SipProvider sip_provider, 
         UAConfig uaConfig, 
         PortPool portPool,
         boolean force_reverse_route, 
-        ServiceOptions serviceConfig
+        ServiceOptions serviceConfig,
+        Vertx vertx
     ) {
 
         super(sip_provider,portPool, uaConfig, serviceConfig);
-        sip_provider.addSelectiveListener(SipId.createMethodId(SipMethods.MESSAGE),this); 
+        sip_provider.addSelectiveListener(SipId.createMethodId(SipMethods.MESSAGE), this);
+        this.vertx = vertx;
     }
 
     @Override
@@ -65,7 +71,7 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
                 StreamerFactory streamerFactory = new StreamerFactory() {
                     @Override
                     public MediaStreamer createMediaStreamer(Executor executor, FlowSpec flow_spec) {
-                        return new OpenAIMediaStreamer(flow_spec);
+                        return new VertxMediaStreamer(OpenAIRealtimeUserAgent.this.vertx, flow_spec);
                     }
                 };
                 ua.accept(new MediaAgent(mediaConfig.getMediaDescs(), streamerFactory));
@@ -89,7 +95,16 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
 		sipConfig.normalize();
 		uaConfig.normalize(sipConfig);
 		
-		new OpenAIRealtimeUserAgent(new SipProvider(sipConfig, new ConfiguredScheduler(schedulerConfig)),uaConfig,portConfig.createPool(), false, serviceConfig);
+        // Initialize a single shared Vert.x instance for all sessions
+        Vertx vertx = Vertx.vertx();
+        new OpenAIRealtimeUserAgent(
+            new SipProvider(sipConfig, new ConfiguredScheduler(schedulerConfig)),
+            uaConfig,
+            portConfig.createPool(),
+            false,
+            serviceConfig,
+            vertx
+        );
 
 		// Prompt before exit
 		try {
