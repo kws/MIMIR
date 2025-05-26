@@ -12,6 +12,7 @@ import io.vertx.core.http.HttpVersion;
 import io.vertx.core.json.JsonObject;
 import org.mjsip.media.FlowSpec;
 import org.mjsip.media.MediaStreamer;
+import org.mjsip.ua.UserAgent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.util.Queue;
@@ -26,7 +27,9 @@ import java.util.Base64;
 public class VertxMediaStreamer implements MediaStreamer {
     private static final Logger LOG = LoggerFactory.getLogger(VertxMediaStreamer.class);
     private final Vertx vertx;
+    private final UserAgent ua;
     private final FlowSpec flowSpec;
+    ExtensionConfig extensionConfig;
     private DatagramSocket udpSocket;
     private WebSocket webSocket;
     private boolean sessionCreated;
@@ -45,15 +48,6 @@ public class VertxMediaStreamer implements MediaStreamer {
     private final PriorityQueue<JitterPacket> jitterBuffer = new PriorityQueue<>();
     private int jitterBufferBytes = 0;
     private long audioFlushTimerId = -1;
-
-    private static String readInstructions() {
-        try {
-            return new String(VertxMediaStreamer.class.getResourceAsStream("/bohr_instructions.txt").readAllBytes());
-        } catch (Exception e) {
-            LOG.error("Failed to read instructions file", e);
-            return "You are playing the role of the famous scientist Niels Bohr.";
-        }
-    }
 
     private static class JitterPacket implements Comparable<JitterPacket> {
         final long timestamp;
@@ -95,9 +89,12 @@ public class VertxMediaStreamer implements MediaStreamer {
         return packet;
     }
 
-    public VertxMediaStreamer(Vertx vertx, FlowSpec flowSpec) {
+    /** Constructs a media streamer with specific OpenAI session settings. */
+    public VertxMediaStreamer(Vertx vertx, UserAgent ua, FlowSpec flowSpec, ExtensionConfig cfg) {
         this.vertx = vertx;
+        this.ua = ua;
         this.flowSpec = flowSpec;
+        this.extensionConfig = cfg;
     }
 
     @Override
@@ -226,6 +223,8 @@ public class VertxMediaStreamer implements MediaStreamer {
                         String conversationItemInputAudioTranscriptDelta = msg.getString("delta");
                         LOG.info("WebSocket message type: {} - delta: {}", type, conversationItemInputAudioTranscriptDelta);
                         break;
+                    case "error":
+                        LOG.error("WebSocket message type: {} - error: {}", type, msg);
                     default:
                         LOG.debug("WebSocket message type: {}", type);
                 }
@@ -237,8 +236,8 @@ public class VertxMediaStreamer implements MediaStreamer {
 
     private void sendSessionConfig() {
         JsonObject session = new JsonObject()
-            .put("instructions", readInstructions())
-            .put("voice", "echo")
+            .put("instructions", this.extensionConfig.getInstructions())
+            .put("voice", this.extensionConfig.getVoice())
             .put("input_audio_format", "g711_ulaw")
             .put("output_audio_format", "g711_ulaw")
             .put("input_audio_transcription", new JsonObject()
@@ -259,7 +258,7 @@ public class VertxMediaStreamer implements MediaStreamer {
         JsonObject msg = new JsonObject()
             .put("type", "response.create")
             .put("response", new JsonObject()
-                .put("instructions", "Ring, ring. The phone is ringing. You pick it up and say: 'Hej, dette er Niels Bohr. Hvad kan jeg hjælpe dig med?'."));
+                .put("instructions", this.extensionConfig.getGreeting()));
         LOG.info("Sending response create: {}", msg.encodePrettily());
         webSocket.writeTextMessage(msg.encode());
     }
@@ -328,7 +327,7 @@ public class VertxMediaStreamer implements MediaStreamer {
      * Warm up an OpenAI realtime session and wait until the first audio delta is received.
      * Returns a Future that completes when the initial response audio is ready.
      */
-    public static io.vertx.core.Future<Void> warmup(Vertx vertx) {
+    public static io.vertx.core.Future<Void> warmup(Vertx vertx, ExtensionConfig cfg) {
         io.vertx.core.Promise<Void> promise = io.vertx.core.Promise.promise();
         io.vertx.core.http.HttpClientOptions clientOpts = new HttpClientOptions()
             .setProtocolVersion(HttpVersion.HTTP_1_1)
@@ -353,15 +352,15 @@ public class VertxMediaStreamer implements MediaStreamer {
                         switch (type) {
                             case "session.created":
                                 JsonObject session = new JsonObject()
-                                    .put("instructions", readInstructions())
-                                    .put("voice", "echo")
+                                    .put("instructions", cfg.getInstructions())
+                                    .put("voice", cfg.getVoice())
                                     .put("input_audio_format", "g711_ulaw")
                                     .put("output_audio_format", "g711_ulaw")
                                     .put("input_audio_transcription", new JsonObject().put("model", "whisper-1"))
                                     .put("turn_detection", new JsonObject().put("type", "server_vad").put("create_response", true).put("interrupt_response", true))
                                     .put("modalities", new io.vertx.core.json.JsonArray().add("audio").add("text"));
-                                JsonObject cfg = new JsonObject().put("type", "session.update").put("session", session);
-                                ws.writeTextMessage(cfg.encode());
+                                JsonObject sessionCfg = new JsonObject().put("type", "session.update").put("session", session);
+                                ws.writeTextMessage(sessionCfg.encode());
                                 break;
                             case "session.updated":
                                 JsonObject createResp = new JsonObject()

@@ -29,6 +29,13 @@
             <version>1.2.11</version>
         </dependency>
         
+        <!-- SnakeYAML for YAML parsing -->
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+            <version>2.2</version>
+        </dependency>
+        
         <!-- Args4J - Command line parsing library used by mjSIP -->
         <dependency>
             <groupId>args4j</groupId>

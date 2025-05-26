@@ -1,5 +1,6 @@
 package com.kajsiebert.sip.openai;
 
+import java.io.IOException;
 import java.util.concurrent.Executor;
 
 import org.mjsip.config.OptionParser;
@@ -29,15 +30,20 @@ import org.mjsip.ua.UserAgentListener;
 import org.mjsip.ua.UserAgentListenerAdapter;
 import org.mjsip.ua.streamer.StreamerFactory;
 import io.vertx.core.Vertx;
-import com.kajsiebert.sip.openai.VertxMediaStreamer;
-
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
+    private static final Logger LOG = LoggerFactory.getLogger(OpenAIRealtimeUserAgent.class);
 
     /** 
 	 * Creates a {@link OpenAIRealtimeUserAgent} service. 
 	 */
     private final Vertx vertx;
+    private final ExtensionConfigManager extConfigManager;
+    private String lastExtensionCalled;
     
     public OpenAIRealtimeUserAgent(
         SipProvider sip_provider, 
@@ -45,12 +51,20 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
         PortPool portPool,
         boolean force_reverse_route, 
         ServiceOptions serviceConfig,
-        Vertx vertx
+        Vertx vertx,
+        ExtensionConfigManager extConfigManager
     ) {
 
         super(sip_provider,portPool, uaConfig, serviceConfig);
         sip_provider.addSelectiveListener(SipId.createMethodId(SipMethods.MESSAGE), this);
         this.vertx = vertx;
+        this.extConfigManager = extConfigManager;
+    }
+
+    @Override
+	protected void onInviteReceived(SipMessage msg) {
+        this.lastExtensionCalled = msg.getHeader("X-Called-Extension").getValue();
+        super.onInviteReceived(msg);
     }
 
     @Override
@@ -64,18 +78,19 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
 			new MediaDesc("audio", 0, "RTP/AVP", mediaSpecs)
 		};
 		mediaConfig.setMediaDescs(mediaDescs);
+        final String lastExtensionCalled = this.lastExtensionCalled;
 
         return new UserAgentListenerAdapter() {
             @Override
             public void onUaIncomingCall(UserAgent ua, NameAddress callee, NameAddress caller, MediaDesc[] media_descs) {
+                final ExtensionConfig cfg = extConfigManager.getConfig(lastExtensionCalled);
                 StreamerFactory streamerFactory = new StreamerFactory() {
                     @Override
                     public MediaStreamer createMediaStreamer(Executor executor, FlowSpec flow_spec) {
-                        return new VertxMediaStreamer(OpenAIRealtimeUserAgent.this.vertx, flow_spec);
+                        return new VertxMediaStreamer(OpenAIRealtimeUserAgent.this.vertx, ua, flow_spec, cfg);
                     }
                 };
-                // Defer accepting the call until the first OpenAI response audio is ready
-                VertxMediaStreamer.warmup(OpenAIRealtimeUserAgent.this.vertx)
+                VertxMediaStreamer.warmup(OpenAIRealtimeUserAgent.this.vertx, cfg)
                     .onComplete(ar -> ua.accept(new MediaAgent(mediaConfig.getMediaDescs(), streamerFactory)));
             }
         };
@@ -97,6 +112,15 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
 		sipConfig.normalize();
 		uaConfig.normalize(sipConfig);
 		
+        // Load extension configuration or fallback to default
+        ExtensionConfigManager extConfigManager;
+        try {
+            extConfigManager = ExtensionConfigManager.load("extensions.yml");
+        } catch (IOException e) {
+            System.err.println("Error loading extension configuration: " + e.getMessage());
+            System.exit(1);
+            return;
+        }
         // Initialize a single shared Vert.x instance for all sessions
         Vertx vertx = Vertx.vertx();
         new OpenAIRealtimeUserAgent(
@@ -105,7 +129,8 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
             portConfig.createPool(),
             false,
             serviceConfig,
-            vertx
+            vertx,
+            extConfigManager
         );
 
 		// Prompt before exit
