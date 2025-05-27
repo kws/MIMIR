@@ -1,13 +1,9 @@
 package com.kajsiebert.sip.openai;
 
 import java.io.IOException;
-import java.util.concurrent.Executor;
 
 import org.mjsip.config.OptionParser;
-import org.mjsip.media.FlowSpec;
 import org.mjsip.media.MediaDesc;
-import org.mjsip.media.MediaSpec;
-import org.mjsip.media.MediaStreamer;
 import org.mjsip.pool.PortConfig;
 import org.mjsip.pool.PortPool;
 import org.mjsip.sip.address.NameAddress;
@@ -19,8 +15,6 @@ import org.mjsip.sip.provider.SipProvider;
 import org.mjsip.sip.provider.SipStack;
 import org.mjsip.time.ConfiguredScheduler;
 import org.mjsip.time.SchedulerConfig;
-import org.mjsip.ua.MediaAgent;
-import org.mjsip.ua.MediaConfig;
 import org.mjsip.ua.RegisteringMultipleUAS;
 import org.mjsip.ua.ServiceConfig;
 import org.mjsip.ua.ServiceOptions;
@@ -28,10 +22,7 @@ import org.mjsip.ua.UAConfig;
 import org.mjsip.ua.UserAgent;
 import org.mjsip.ua.UserAgentListener;
 import org.mjsip.ua.UserAgentListenerAdapter;
-import org.mjsip.ua.streamer.StreamerFactory;
 import io.vertx.core.Vertx;
-import java.util.regex.Pattern;
-import java.util.regex.Matcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -69,29 +60,13 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
 
     @Override
     protected UserAgentListener createCallHandler(SipMessage msg) {
-        MediaConfig mediaConfig = new MediaConfig();
-		MediaSpec[] mediaSpecs = new MediaSpec[] {
-			new MediaSpec(0, "PCMU", 8000, 1, 160),  // G.711 u-law
-			// new MediaSpec(8, "PCMA", 8000, 1, 160)   // G.711 A-law
-		};
-		MediaDesc[] mediaDescs = new MediaDesc[] {
-			new MediaDesc("audio", 0, "RTP/AVP", mediaSpecs)
-		};
-		mediaConfig.setMediaDescs(mediaDescs);
-        final String lastExtensionCalled = this.lastExtensionCalled;
-
         return new UserAgentListenerAdapter() {
             @Override
             public void onUaIncomingCall(UserAgent ua, NameAddress callee, NameAddress caller, MediaDesc[] media_descs) {
                 final ExtensionConfig cfg = extConfigManager.getConfig(lastExtensionCalled);
-                StreamerFactory streamerFactory = new StreamerFactory() {
-                    @Override
-                    public MediaStreamer createMediaStreamer(Executor executor, FlowSpec flow_spec) {
-                        return new VertxMediaStreamer(OpenAIRealtimeUserAgent.this.vertx, ua, flow_spec, cfg);
-                    }
-                };
-                VertxMediaStreamer.warmup(OpenAIRealtimeUserAgent.this.vertx, cfg)
-                    .onComplete(ar -> ua.accept(new MediaAgent(mediaConfig.getMediaDescs(), streamerFactory)));
+
+                final OpenAICallController streamer = new OpenAICallController(OpenAIRealtimeUserAgent.this.vertx, ua, cfg);
+                streamer.awaitCallHandled(30);
             }
         };
     }
