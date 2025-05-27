@@ -6,4 +6,5 @@ public enum WebsocketSessionState {
     SESSION_CREATED,
     ANSWERED,
     AUDIO_RECEIVED,
+    TERMINATED,
 } 

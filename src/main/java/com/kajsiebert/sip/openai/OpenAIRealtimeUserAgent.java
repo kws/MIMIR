@@ -26,6 +26,8 @@ import io.vertx.core.Vertx;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.kajsiebert.sip.openai.util.OptionsListener;
+
 public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
     private static final Logger LOG = LoggerFactory.getLogger(OpenAIRealtimeUserAgent.class);
 
@@ -36,7 +38,6 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
 	 */
     private final Vertx vertx;
     private final ExtensionConfigManager extConfigManager;
-    private String lastExtensionCalled;
     
     public OpenAIRealtimeUserAgent(
         SipProvider sip_provider, 
@@ -55,19 +56,17 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
         this.extConfigManager = extConfigManager;
     }
 
-    @Override
-	protected void onInviteReceived(SipMessage msg) {
-        this.lastExtensionCalled = msg.getHeader("X-Called-Extension").getValue();
-        super.onInviteReceived(msg);
-    }
 
     @Override
     protected UserAgentListener createCallHandler(SipMessage msg) {
+        String lastExtensionCalled = msg.getHeader("X-Called-Extension").getValue();
+        final ExtensionConfig cfg = extConfigManager.getConfig(lastExtensionCalled);
+
+        LOG.debug("Creating call handler for extension: {}", lastExtensionCalled);
+
         return new UserAgentListenerAdapter() {
             @Override
             public void onUaIncomingCall(UserAgent ua, NameAddress callee, NameAddress caller, MediaDesc[] media_descs) {
-                final ExtensionConfig cfg = extConfigManager.getConfig(lastExtensionCalled);
-
                 final OpenAICallController streamer = new OpenAICallController(OpenAIRealtimeUserAgent.this.vertx, ua, cfg);
                 streamer.awaitCallHandled(30);
             }

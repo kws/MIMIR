@@ -72,9 +72,10 @@ public abstract class WebsocketMessageHandler {
         Consumer<JsonObject> handler = getHandler(messageType);
         if (handler != null) {
             handler.accept(msg);
+            LOG.debug("Handled message type: {}", messageType);
             return true;
         } else {
-            LOG.warn("No handler found for message type: {}", messageType);
+            LOG.debug("No handler found for message type: {}", messageType);
             return false;
         }
     }

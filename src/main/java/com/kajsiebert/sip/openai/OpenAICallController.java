@@ -20,7 +20,7 @@ import io.vertx.core.Vertx;
 public class OpenAICallController implements StreamerFactory {
     private static final Logger LOG = LoggerFactory.getLogger(OpenAICallController.class);
 
-    private static final OpenAIMediaOptions mediaOptions = new OpenAIMediaOptions();
+    private static final OpenAIMediaOptions mediaOptions = new OpenAIMediaOptions(OpenAIMediaOptions.AudioCodecOptions.PCMU);
 
     private final CompletableFuture<Void> callHandledFuture = new CompletableFuture<>();
     private final UserAgent ua;
@@ -31,8 +31,14 @@ public class OpenAICallController implements StreamerFactory {
 
         bridge = new OpenAIRealtimeBridge(vertx, extensionConfig);
         bridge.onAudioReceived(state -> {
+            LOG.debug("Audio received. Starting media agent. State: {}", state);
             MediaAgent mediaAgent = new MediaAgent(mediaOptions.getMediaDescs(), this);
             ua.accept(mediaAgent);
+            callHandledFuture.complete(null);
+        });
+        bridge.onCallEnded(state -> {
+            LOG.debug("Call ended. State: {}", state);
+            ua.hangup();
             callHandledFuture.complete(null);
         });
     }

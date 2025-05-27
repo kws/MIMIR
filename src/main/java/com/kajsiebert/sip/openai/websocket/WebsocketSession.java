@@ -29,6 +29,7 @@ public class WebsocketSession extends WebsocketMessageHandler {
     protected WebsocketSessionState state = WebsocketSessionState.NEW;
     private final RTPAudioQueue audioQueue = new RTPAudioQueue();
     private final ConsumerArray<WebsocketSessionState> audioReceivedCallbacks = new ConsumerArray<>();
+    private final ConsumerArray<WebsocketSessionState> callEndedCallbacks = new ConsumerArray<>();
 
     private WebSocket webSocket;
 
@@ -83,18 +84,20 @@ public class WebsocketSession extends WebsocketMessageHandler {
         if (frame.isText()) {
             JsonObject msg = new JsonObject(frame.textData());
             String type = msg.getString("type");
-            if (!this.handle(type, msg)) {
-                LOG.debug("Ignored message type: {}", type);
-            }
+            handle(type, msg);
         }
     };
 
     protected void handleException(Throwable err) {
+        this.state = WebsocketSessionState.TERMINATED;
         LOG.error("WebSocket error", err);
+        callEndedCallbacks.accept(this.state);
     }
 
     protected void handleClose(Void v) {
+        this.state = WebsocketSessionState.TERMINATED;
         LOG.info("WebSocket closed");
+        callEndedCallbacks.accept(this.state);
     }
 
     public JsonObject getSessionConfig() {
@@ -146,7 +149,7 @@ public class WebsocketSession extends WebsocketMessageHandler {
         String deltaB64 = msg.getString("delta");
         if (deltaB64 != null) {
 
-            if (this.state.compareTo(WebsocketSessionState.ANSWERED) < 0) {
+            if (this.state.compareTo(WebsocketSessionState.AUDIO_RECEIVED) < 0) {
                 this.state = WebsocketSessionState.AUDIO_RECEIVED;
                 audioReceivedCallbacks.accept(this.state);
             }
@@ -156,8 +159,22 @@ public class WebsocketSession extends WebsocketMessageHandler {
         }
     }
 
+    @WebsocketMessage("input_audio_buffer.speech_started")
+    public void handleInputAudioBufferSpeechStarted(JsonObject msg) {
+        audioQueue.clearAudio();
+    }
+    
+    @WebsocketMessage("error")
+    public void handleError(JsonObject msg) {
+        LOG.error("Error message received: {}", msg.encode());
+    }
+
     public void onAudioReceived(Consumer<WebsocketSessionState> callback) {
         this.audioReceivedCallbacks.add(callback);
+    }
+
+    public void onCallEnded(Consumer<WebsocketSessionState> callback) {
+        this.callEndedCallbacks.add(callback);
     }
 
     public void sendAudio(byte[] audio) {
@@ -173,76 +190,3 @@ public class WebsocketSession extends WebsocketMessageHandler {
 
 
 }
-
-// switch (type) {
-//     case "session.created":
-//         if (!sessionCreated) {
-//             sessionCreated = true;
-//             sendSessionConfig();
-//         }
-//         break;
-//     case "session.updated":
-//         readyToSend = true;
-//         sendCreateResponse();
-//         startPeriodicSend();
-//         startAudioFlush();
-//         break;
-//     case "response.audio.delta":
-//         String deltaB64 = msg.getString("delta");
-//         if (deltaB64 != null) {
-//             byte[] audio = Base64.getDecoder().decode(deltaB64);
-//             audioBuffer.appendBytes(audio);
-            
-//             // Queue complete RTP packets
-//             while (audioBuffer.length() >= RTP_PACKET_SIZE) {
-//                 byte[] payload = audioBuffer.getBytes(0, RTP_PACKET_SIZE);
-//                 // Create a new buffer with remaining data
-//                 Buffer remaining = Buffer.buffer(audioBuffer.length() - RTP_PACKET_SIZE);
-//                 if (audioBuffer.length() > RTP_PACKET_SIZE) {
-//                     remaining.appendBytes(audioBuffer.getBytes(RTP_PACKET_SIZE, audioBuffer.length()));
-//                 }
-//                 audioBuffer = remaining;
-                
-//                 // Queue the packet instead of sending directly
-//                 Buffer rtpPacket = createRtpPacket(payload);
-//                 rtpQueue.offer(rtpPacket);
-//             }
-//         }
-//         break;
-//     case "response.audio_transcript.delta":
-//         String responseAudioTranscriptDelta = msg.getString("delta");
-//         LOG.info("WebSocket message type: {} - delta: {}", type, responseAudioTranscriptDelta);
-//         break;
-//     case "response.audio.done":
-//         LOG.info("WebSocket message type: {} - done", type);
-//         // Process any remaining audio data
-//         if (audioBuffer.length() > 0) {
-//             // Pad the remaining data to RTP_PACKET_SIZE with silence (0xFF for G.711 u-law)
-//             byte[] payload = new byte[RTP_PACKET_SIZE];
-//             byte[] remaining = audioBuffer.getBytes();
-//             System.arraycopy(remaining, 0, payload, 0, remaining.length);
-//             // Fill the rest with silence (0xFF for G.711 u-law)
-//             for (int i = remaining.length; i < RTP_PACKET_SIZE; i++) {
-//                 payload[i] = (byte) 0xFF;
-//             }
-//             Buffer rtpPacket = createRtpPacket(payload);
-//             rtpQueue.offer(rtpPacket);
-//             audioBuffer = Buffer.buffer(); // Clear the buffer
-//         }
-//         break;
-//     case "input_audio_buffer.speech_started":
-//         LOG.info("WebSocket message type: {} - speech started", type);
-//         rtpQueue.clear();
-//         break;
-//     case "input_audio_buffer.speech_stopped":
-//         LOG.info("WebSocket message type: {} - speech stopped", type);
-//         break;
-//     case "conversation.item.input_audio_transcription.delta":
-//         String conversationItemInputAudioTranscriptDelta = msg.getString("delta");
-//         LOG.info("WebSocket message type: {} - delta: {}", type, conversationItemInputAudioTranscriptDelta);
-//         break;
-//     case "error":
-//         LOG.error("WebSocket message type: {} - error: {}", type, msg);
-//     default:
-//         LOG.debug("WebSocket message type: {}", type);
-// }
