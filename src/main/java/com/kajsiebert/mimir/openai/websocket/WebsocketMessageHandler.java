@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai.websocket;
+package com.kajsiebert.mimir.openai.websocket;
 
 import java.lang.reflect.Method;
 import java.util.HashMap;

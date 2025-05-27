@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai;
+package com.kajsiebert.mimir.openai;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

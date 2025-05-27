@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai;
+package com.kajsiebert.mimir.openai;
 
 import java.util.function.Consumer;
 
@@ -7,12 +7,12 @@ import org.mjsip.media.MediaStreamer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.kajsiebert.sip.openai.rtp.RTPConstants;
-import com.kajsiebert.sip.openai.rtp.RTPSession;
-import com.kajsiebert.sip.openai.rtp.RTPTimerManager;
-import com.kajsiebert.sip.openai.util.ConsumerArray;
-import com.kajsiebert.sip.openai.websocket.WebsocketSession;
-import com.kajsiebert.sip.openai.websocket.WebsocketSessionState;
+import com.kajsiebert.mimir.openai.rtp.RTPConstants;
+import com.kajsiebert.mimir.openai.rtp.RTPSession;
+import com.kajsiebert.mimir.openai.rtp.RTPTimerManager;
+import com.kajsiebert.mimir.openai.util.ConsumerArray;
+import com.kajsiebert.mimir.openai.websocket.WebsocketSession;
+import com.kajsiebert.mimir.openai.websocket.WebsocketSessionState;
 
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;

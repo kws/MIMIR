@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai.util;
+package com.kajsiebert.mimir.openai.util;
 
 import java.util.ArrayList;
 import java.util.List;

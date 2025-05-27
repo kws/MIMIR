@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai.rtp;
+package com.kajsiebert.mimir.openai.rtp;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -11,6 +11,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+
+import com.kajsiebert.mimir.openai.rtp.RTPTimerManager;
 
 import io.vertx.core.Vertx;
 import io.vertx.junit5.VertxExtension;

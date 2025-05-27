@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai.rtp;
+package com.kajsiebert.mimir.openai.rtp;
 
 /**
  * Configuration class for RTP timing parameters. Allows fine-tuning of timing behavior for

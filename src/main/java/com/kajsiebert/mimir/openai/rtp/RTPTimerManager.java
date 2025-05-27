@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai.rtp;
+package com.kajsiebert.mimir.openai.rtp;
 
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;

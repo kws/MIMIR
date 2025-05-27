@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai.websocket;
+package com.kajsiebert.mimir.openai.websocket;
 
 public enum WebsocketSessionState {
   NEW,

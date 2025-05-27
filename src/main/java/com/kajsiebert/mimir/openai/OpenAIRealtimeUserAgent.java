@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai;
+package com.kajsiebert.mimir.openai;
 
 import java.io.IOException;
 
@@ -25,7 +25,7 @@ import org.mjsip.ua.UserAgentListenerAdapter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.kajsiebert.sip.openai.util.OptionsListener;
+import com.kajsiebert.mimir.openai.util.OptionsListener;
 
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;

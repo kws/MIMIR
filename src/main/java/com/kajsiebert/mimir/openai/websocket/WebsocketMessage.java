@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai.websocket;
+package com.kajsiebert.mimir.openai.websocket;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;

@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai.rtp;
+package com.kajsiebert.mimir.openai.rtp;
 
 /** Constants for RTP packets. */
 public class RTPConstants {

@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai.websocket;
+package com.kajsiebert.mimir.openai.websocket;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -21,7 +21,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import com.kajsiebert.sip.openai.ExtensionConfig;
+import com.kajsiebert.mimir.openai.ExtensionConfig;
 
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Handler;

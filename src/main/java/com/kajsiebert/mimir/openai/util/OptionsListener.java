@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai.util;
+package com.kajsiebert.mimir.openai.util;
 
 import org.mjsip.sip.message.SipMessage;
 import org.mjsip.sip.message.SipResponses;

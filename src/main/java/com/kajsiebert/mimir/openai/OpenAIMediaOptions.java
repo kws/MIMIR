@@ -1,11 +1,11 @@
-package com.kajsiebert.sip.openai;
+package com.kajsiebert.mimir.openai;
 
 import java.util.ArrayList;
 
 import org.mjsip.media.MediaDesc;
 import org.mjsip.media.MediaSpec;
 
-import com.kajsiebert.sip.openai.rtp.RTPConstants;
+import com.kajsiebert.mimir.openai.rtp.RTPConstants;
 
 public class OpenAIMediaOptions {
   public static enum AudioCodecOptions {

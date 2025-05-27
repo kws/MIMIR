@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai;
+package com.kajsiebert.mimir.openai;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;

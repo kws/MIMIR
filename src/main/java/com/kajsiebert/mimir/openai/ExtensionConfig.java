@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai;
+package com.kajsiebert.mimir.openai;
 
 /**
  * Represents the configuration for a given extension, including OpenAI instructions, voice, and

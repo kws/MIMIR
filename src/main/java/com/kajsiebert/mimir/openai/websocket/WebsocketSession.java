@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai.websocket;
+package com.kajsiebert.mimir.openai.websocket;
 
 import java.util.Base64;
 import java.util.function.Consumer;
@@ -6,9 +6,9 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.kajsiebert.sip.openai.ExtensionConfig;
-import com.kajsiebert.sip.openai.rtp.RTPAudioQueue;
-import com.kajsiebert.sip.openai.util.ConsumerArray;
+import com.kajsiebert.mimir.openai.ExtensionConfig;
+import com.kajsiebert.mimir.openai.rtp.RTPAudioQueue;
+import com.kajsiebert.mimir.openai.util.ConsumerArray;
 
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;

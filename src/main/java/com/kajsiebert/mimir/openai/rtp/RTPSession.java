@@ -1,4 +1,4 @@
-package com.kajsiebert.sip.openai.rtp;
+package com.kajsiebert.mimir.openai.rtp;
 
 import org.mjsip.media.FlowSpec;
 import org.slf4j.Logger;
