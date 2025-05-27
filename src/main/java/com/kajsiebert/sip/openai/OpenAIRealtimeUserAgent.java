@@ -23,6 +23,7 @@ import org.mjsip.ua.UserAgent;
 import org.mjsip.ua.UserAgentListener;
 import org.mjsip.ua.UserAgentListenerAdapter;
 import io.vertx.core.Vertx;
+import io.vertx.core.VertxOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -98,8 +99,16 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
             System.exit(1);
             return;
         }
-        // Initialize a single shared Vert.x instance for all sessions
-        Vertx vertx = Vertx.vertx();
+        // Initialize a single shared Vert.x instance for all sessions with optimized configuration
+        VertxOptions vertxOptions = new VertxOptions()
+            .setEventLoopPoolSize(4)  // Dedicated event loops
+            .setWorkerPoolSize(10)    // Adequate worker threads for blocking operations
+            .setInternalBlockingPoolSize(10)
+            .setMaxEventLoopExecuteTime(2000)  // Allow slightly longer event loop execution for RTP timing
+            .setMaxWorkerExecuteTime(60000)
+            .setWarningExceptionTime(5000);
+        
+        Vertx vertx = Vertx.vertx(vertxOptions);
         new OpenAIRealtimeUserAgent(
             new SipProvider(sipConfig, new ConfiguredScheduler(schedulerConfig)),
             uaConfig,

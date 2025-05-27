@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 
 import com.kajsiebert.sip.openai.rtp.RTPConstants;
 import com.kajsiebert.sip.openai.rtp.RTPSession;
+import com.kajsiebert.sip.openai.rtp.RTPTimerManager;
 import com.kajsiebert.sip.openai.util.ConsumerArray;
 import com.kajsiebert.sip.openai.websocket.WebsocketSession;
 import com.kajsiebert.sip.openai.websocket.WebsocketSessionState;
@@ -27,11 +28,12 @@ public class OpenAIRealtimeBridge implements MediaStreamer {
 
     private FlowSpec flowSpec;
     private RTPSession rtpSession;
-    private long periodicTimerId = -1;
     private long audioFlushTimerId = -1;
+    private RTPTimerManager rtpTimerManager;
 
     public OpenAIRealtimeBridge(Vertx vertx, ExtensionConfig extensionConfig) {
         this.vertx = vertx;
+        this.rtpTimerManager = new RTPTimerManager(vertx);
 
         websocketSession = new WebsocketSession(vertx, extensionConfig);
         websocketSession.start();
@@ -57,8 +59,8 @@ public class OpenAIRealtimeBridge implements MediaStreamer {
 
         LOG.debug("RTPSession created");
 
-        // Start receiving websocket audio and sending RTP packets
-        periodicTimerId = vertx.setPeriodic(RTPConstants.PACKET_INTERVAL_MS, id -> {
+        // Start receiving websocket audio and sending RTP packets using high-priority timer
+        rtpTimerManager.startPeriodicTask(RTPConstants.PACKET_INTERVAL_MS, () -> {
             Buffer data = websocketSession.getNextRtpPacket();
             if (data != null) {
                 rtpSession.sendPacket(data);
@@ -88,10 +90,8 @@ public class OpenAIRealtimeBridge implements MediaStreamer {
             rtpSession = null;
         }
 
-        if (periodicTimerId != -1) {
-            vertx.cancelTimer(periodicTimerId);
-            periodicTimerId = -1;
-        }
+        // Stop the high-priority RTP timer
+        rtpTimerManager.shutdown();
 
         if (audioFlushTimerId != -1) {
             vertx.cancelTimer(audioFlushTimerId);
