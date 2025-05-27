@@ -136,7 +136,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>com.kajsiebert.sip.openai.OpenAIRealtimeUserAgent</mainClass>
+                            <mainClass>com.kajsiebert.mimir.openai.OpenAIRealtimeUserAgent</mainClass>
                         </manifest>
                     </archive>
                     <descriptorRefs>
