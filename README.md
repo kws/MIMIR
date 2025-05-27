@@ -10,7 +10,7 @@ This project is named after **Mímir** from Norse mythology - a figure renowned 
 
 Just like Odin consulting Mímir's wise head, you can now consult with the brilliant minds of history through the magic of AI and voice technology!
 
-The project is a concept by [Kaj Siebert](https://k-s.com/) and is part of an interactive art installation for [The Big Bang Collective](https://thebigbangcollective.com/).
+The project is a concept by [Kaj Siebert](https://k-si.com/) and is part of an interactive art installation for [The Big Bang Collective](https://thebigbangcollective.com/).
 
 ## 🔬 What Does It Do?
 
