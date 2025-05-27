@@ -38,6 +38,8 @@ import org.slf4j.LoggerFactory;
 public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
     private static final Logger LOG = LoggerFactory.getLogger(OpenAIRealtimeUserAgent.class);
 
+    private static final OptionsListener optionsListener = new OptionsListener();
+
     /** 
 	 * Creates a {@link OpenAIRealtimeUserAgent} service. 
 	 */
@@ -57,6 +59,7 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
 
         super(sip_provider,portPool, uaConfig, serviceConfig);
         sip_provider.addSelectiveListener(SipId.createMethodId(SipMethods.MESSAGE), this);
+        sip_provider.addSelectiveListener(SipId.createMethodId(SipMethods.OPTIONS), optionsListener);
         this.vertx = vertx;
         this.extConfigManager = extConfigManager;
     }
