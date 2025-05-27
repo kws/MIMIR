@@ -14,7 +14,7 @@ public class RTPSession {
 
   private final FlowSpec flowSpec;
   private final DatagramSocket udpSocket;
-  private final RTPAudioBuffer audioBuffer = new RTPAudioBuffer();
+  final RTPAudioBuffer audioBuffer = new RTPAudioBuffer();
 
   public RTPSession(Vertx vertx, FlowSpec flowSpec) {
     this.flowSpec = flowSpec;
