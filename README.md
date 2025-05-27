@@ -77,10 +77,36 @@ java -jar target/sip-client-1.0-SNAPSHOT-jar-with-dependencies.jar -h
 
 ## 📞 Making Calls
 
+### Asterisk Configuration
+
+To route different extensions to different scientists, you need to configure Asterisk to add custom headers to SIP messages. Add this to your Asterisk dialplan (`extensions.conf`):
+
+```asterisk
+; Subroutine to add custom SIP headers
+[add-header]
+exten => s,1,Set(PJSIP_HEADER(add,X-Called-Extension)=${ARG1})
+same  => n,Return()
+
+; Route extensions 2001-2099 to different scientists
+exten => _20XX,1,NoOp(Setting up call to extension ${EXTEN})
+same => n,Dial(PJSIP/mimir-user,,b(add-header^s^1(${EXTEN})))
+same => n,Hangup()
+```
+
+This configuration:
+- Matches any extension from 2001-2099 (`_20XX` pattern)
+- Adds a custom SIP header containing the dialed extension number
+- Routes the call to your MIMIR SIP user account (`mimir-user`)
+- MIMIR uses the header to determine which scientist to connect
+
+Replace `mimir-user` with your actual SIP account name that MIMIR is registered as.
+
+### Making the Call
+
 Once MIMIR is running and registered with your PBX:
 
-1. **Dial an extension** from any SIP phone connected to your Asterisk system
-2. **Wait for the connection** - MIMIR will answer and establish the AI connection
+1. **Dial an extension** (e.g., 2001, 2002, 2003) from any SIP phone connected to your Asterisk system
+2. **Wait for the connection** - MIMIR will answer and establish the AI connection to the appropriate scientist
 3. **Start talking!** - Have a real-time voice conversation with your chosen scientist
 4. **Enjoy the conversation** - Ask questions, debate theories, or just chat!
 
