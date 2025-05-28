@@ -65,7 +65,12 @@ public class RTPTimerManager {
 
                 lastExecutionTime = currentTime;
 
-                task.run();
+                // Execute task with exception handling to prevent termination
+                try {
+                  task.run();
+                } catch (Exception e) {
+                  LOG.warn("Exception in RTP task execution, continuing: {}", e.getMessage(), e);
+                }
               },
               0,
               intervalMs,
