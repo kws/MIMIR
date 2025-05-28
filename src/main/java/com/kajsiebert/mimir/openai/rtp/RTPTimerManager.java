@@ -65,15 +65,7 @@ public class RTPTimerManager {
 
                 lastExecutionTime = currentTime;
 
-                // Execute the RTP task on Vert.x context to maintain thread safety
-                vertx.runOnContext(
-                    v -> {
-                      try {
-                        task.run();
-                      } catch (Exception e) {
-                        LOG.error("Error executing RTP task", e);
-                      }
-                    });
+                task.run();
               },
               0,
               intervalMs,
