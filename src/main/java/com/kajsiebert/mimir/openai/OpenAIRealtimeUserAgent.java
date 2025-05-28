@@ -1,6 +1,7 @@
 package com.kajsiebert.mimir.openai;
 
 import java.io.IOException;
+import java.util.concurrent.CountDownLatch;
 
 import org.mjsip.config.OptionParser;
 import org.mjsip.media.MediaDesc;
@@ -111,21 +112,59 @@ public class OpenAIRealtimeUserAgent extends RegisteringMultipleUAS {
             .setWarningExceptionTime(5000);
 
     Vertx vertx = Vertx.vertx(vertxOptions);
-    new OpenAIRealtimeUserAgent(
-        new SipProvider(sipConfig, new ConfiguredScheduler(schedulerConfig)),
-        uaConfig,
-        portConfig.createPool(),
-        false,
-        serviceConfig,
-        vertx,
-        extConfigManager);
+    OpenAIRealtimeUserAgent userAgent =
+        new OpenAIRealtimeUserAgent(
+            new SipProvider(sipConfig, new ConfiguredScheduler(schedulerConfig)),
+            uaConfig,
+            portConfig.createPool(),
+            false,
+            serviceConfig,
+            vertx,
+            extConfigManager);
 
-    // Prompt before exit
+    // Use CountDownLatch for clean shutdown coordination
+    CountDownLatch shutdownLatch = new CountDownLatch(1);
+
+    // Register shutdown hook for graceful cleanup on SIGTERM/SIGINT
+    Runtime.getRuntime()
+        .addShutdownHook(
+            new Thread(
+                () -> {
+                  LOG.info("Shutdown signal received, cleaning up...");
+                  try {
+                    // Close Vert.x gracefully
+                    vertx
+                        .close()
+                        .onComplete(
+                            ar -> {
+                              if (ar.succeeded()) {
+                                LOG.info("Vert.x closed successfully");
+                              } else {
+                                LOG.error("Error closing Vert.x", ar.cause());
+                              }
+                              shutdownLatch.countDown();
+                            });
+
+                    // Wait for cleanup with timeout
+                    if (!shutdownLatch.await(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                      LOG.warn("Shutdown timeout exceeded, forcing exit");
+                    }
+                  } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    LOG.warn("Shutdown interrupted");
+                  }
+                }));
+
+    System.out.println("OpenAI Realtime User Agent started. Press CTRL+C to stop.");
+
     try {
-      System.out.println("press 'enter' to exit");
-      (new java.io.BufferedReader(new java.io.InputStreamReader(System.in))).readLine();
-      System.exit(0);
-    } catch (Exception e) {
+      // Keep main thread alive until shutdown signal
+      shutdownLatch.await();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      LOG.info("Main thread interrupted");
     }
+
+    LOG.info("Application stopped");
   }
 }
