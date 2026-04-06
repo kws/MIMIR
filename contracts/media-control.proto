@@ -2,79 +2,93 @@ syntax = "proto3";
 
 package mimir.media.v1;
 
+import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
+
+// Semantic versioning policy for this contract:
+// - Breaking wire/API changes require a MAJOR version bump and a new package namespace (e.g. mimir.media.v2).
+// - Backward-compatible additions (new optional fields/RPCs/enum values) are MINOR.
+// - Documentation-only adjustments are PATCH.
+// Breaking changes without a MAJOR bump are forbidden so alternate media implementations remain safely swappable.
 
 message Empty {}
 
-message SipParticipant {
-  string caller = 1;
-  string callee = 2;
-  string called_extension = 3;
-}
-
-message MediaSessionConfig {
-  string model = 1;
-  string voice = 2;
-  string instructions = 3;
-  string greeting = 4;
-  string input_codec = 5;
-  string output_codec = 6;
-  int32 sample_rate_hz = 7;
-}
-
-message RtpFlow {
-  string local_address = 1;
-  int32 local_port = 2;
-  string remote_address = 3;
-  int32 remote_port = 4;
+message Endpoint {
+  string ip = 1;
+  uint32 port = 2;
 }
 
 message CreateMediaSessionRequest {
   string call_id = 1;
-  SipParticipant participant = 2;
-  MediaSessionConfig config = 3;
-  RtpFlow rtp = 4;
-  map<string, string> metadata = 5;
+  string codec = 2;
+  Endpoint local_rtp = 3;
+  Endpoint remote_rtp = 4;
+  string ai_profile = 5;
 }
 
-message CreateMediaSessionResponse {
-  string media_session_id = 1;
-  string status = 2;
+message StartMediaRequest {
+  string call_id = 1;
 }
 
-message StartMediaSessionRequest {
-  string media_session_id = 1;
-}
-
-message StopMediaSessionRequest {
-  string media_session_id = 1;
+message StopMediaRequest {
+  string call_id = 1;
   string reason = 2;
 }
 
-message MediaSessionStatus {
+message GetMediaHealthRequest {
+  string call_id = 1;
+}
+
+message MediaSession {
   string media_session_id = 1;
   string call_id = 2;
-  string status = 3;
+  MediaStatus status = 3;
   string reason = 4;
+}
+
+enum MediaStatus {
+  MEDIA_STATUS_UNSPECIFIED = 0;
+  MEDIA_STATUS_CREATED = 1;
+  MEDIA_STATUS_STARTING = 2;
+  MEDIA_STATUS_ACTIVE = 3;
+  MEDIA_STATUS_STOPPING = 4;
+  MEDIA_STATUS_ENDED = 5;
+  MEDIA_STATUS_FAILED = 6;
+}
+
+message MediaHealth {
+  string call_id = 1;
+  double jitter_ms = 2;
+  double packet_loss_percent = 3;
+  double ws_latency_ms = 4;
+}
+
+enum MediaEventTopic {
+  MEDIA_EVENT_TOPIC_UNSPECIFIED = 0;
+  MEDIA_READY = 1;
+  FIRST_AUDIO_RECEIVED = 2;
+  MEDIA_ERROR = 3;
+  MEDIA_ENDED = 4;
 }
 
 message MediaEvent {
   string event_id = 1;
-  string event_type = 2;
-  string media_session_id = 3;
-  string call_id = 4;
-  google.protobuf.Timestamp occurred_at = 5;
-  map<string, string> attributes = 6;
+  MediaEventTopic topic = 2;
+  string call_id = 3;
+  google.protobuf.Timestamp occurred_at = 4;
+  google.protobuf.Struct payload = 5;
 }
 
 message EventSubscription {
-  repeated string media_session_id = 1;
+  string call_id = 1;
 }
 
 service MediaControlService {
-  rpc CreateMediaSession(CreateMediaSessionRequest) returns (CreateMediaSessionResponse);
-  rpc StartMediaSession(StartMediaSessionRequest) returns (MediaSessionStatus);
-  rpc StopMediaSession(StopMediaSessionRequest) returns (MediaSessionStatus);
-  rpc GetMediaSession(MediaSessionStatus) returns (MediaSessionStatus);
+  rpc CreateMediaSession(CreateMediaSessionRequest) returns (MediaSession);
+  rpc StartMedia(StartMediaRequest) returns (MediaSession);
+  rpc StopMedia(StopMediaRequest) returns (MediaSession);
+  rpc GetMediaHealth(GetMediaHealthRequest) returns (MediaHealth);
+
+  // Event topics: MEDIA_READY, FIRST_AUDIO_RECEIVED, MEDIA_ERROR, MEDIA_ENDED.
   rpc StreamEvents(EventSubscription) returns (stream MediaEvent);
 }
