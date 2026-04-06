@@ -1,39 +1,34 @@
-version: "3.9"
-
 services:
+  pbx-fixture:
+    build:
+      context: ./pbx
+    ports:
+      - "5060:5060/udp"
+      - "10000-10099:10000-10099/udp"
+
   media-bridge:
     build:
       context: ./media-bridge
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      SIP_FLOW_HANDLER_URL: http://sip-flow-handler:8080
-    depends_on:
-      - pbx
     ports:
       - "8081:8081"
 
-  sip-flow-handler:
+  orchestrator:
     build:
-      context: ./sip-flow-handler
+      context: ./orchestrator
     environment:
       MEDIA_BRIDGE_URL: http://media-bridge:8081
       ALLOWED_EXTENSIONS: 2001,2002,2003,2004,2005,2006
-      ALLOWED_TRUNK_SOURCES: pbx
-      MAX_ACTIVE_CALLS_PER_SOURCE: 20
+      ALLOWED_ADAPTERS: ""
+      MAX_ACTIVE_CALLS_PER_ADAPTER: 20
       AI_PROFILE_CONFIG_PATH: /etc/mimir/ai-profiles.json
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       SCIENTIST_MODEL_NAME: ${SCIENTIST_MODEL_NAME:-gpt-4o-realtime-preview-2024-12-17}
     volumes:
       - ./config/ai-profiles.json:/etc/mimir/ai-profiles.json:ro
     depends_on:
+      - pbx-fixture
       - media-bridge
     ports:
       - "8080:8080"
-
-  pbx:
-    build:
-      context: ./pbx
-    container_name: mimir-pbx
-    ports:
-      - "5060:5060/udp"
-      - "10000-10099:10000-10099/udp"

@@ -1,23 +1,23 @@
 # Observability assets
 
-This folder provides runtime-comparison observability for SIP handler + Media Bridge.
+This folder provides runtime-comparison observability for the orchestrator and media bridge.
 
 ## Metrics endpoints
 
-- SIP handler: `GET /metrics`
+- Orchestrator: `GET /metrics`
 - Media bridge: `GET /metrics`
 
-Both services emit structured logs that include `call_id` and `bridge_session_id` keys where available.
+The orchestrator emits structured logs with `call_id` and `bridge_session_id` where available. The media bridge currently exposes lifecycle state primarily through metrics and SSE events.
 
 ## Runtime swap evidence model
 
-Use the `runtime` label (for example, `python` vs `rust`/`go`) on Media Bridge telemetry to compare:
+Use the `runtime` label on media bridge telemetry to compare:
 
-- INVITE → answer latency
+- inbound-call receipt to active-media latency
 - first-audio latency
 - RTP packet loss / jitter
 - websocket reconnect and error rates
-- call completion and failure reasons
+- media bridge call completion and failure reasons
 
 ## Telemetry ingestion
 

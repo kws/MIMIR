@@ -1,15 +1,15 @@
 openapi: 3.0.3
 info:
   title: MIMIR Media Bridge Control API
-  version: 1.1.0
+  version: 2.0.0
   description: |
-    Versioned HTTP contract between the SIP flow controller and the media bridge.
-    This contract documents the prototype HTTP API that is implemented in this repository today.
+    Versioned HTTP contract between the orchestrator and the media bridge.
+    This contract documents the provider-agnostic media API implemented in this repository today.
 
     Scope notes:
-      - Inbound call handling only.
-      - Session start/stop operations are keyed by media session ID.
-      - Event streams are delivered over server-sent events (SSE).
+      - Inbound media only.
+      - Session lifecycle operations are keyed by media session ID.
+      - Media lifecycle events are delivered over server-sent events (SSE).
 servers:
   - url: http://media-bridge:8081
 paths:
@@ -106,24 +106,6 @@ paths:
                 $ref: '#/components/schemas/AcceptedResponse'
         '404':
           description: Session not found
-  /v1/call-events:
-    get:
-      summary: Stream call lifecycle events from the media bridge
-      operationId: StreamCallEvents
-      parameters:
-        - in: query
-          name: call_id
-          required: false
-          schema:
-            type: string
-          description: Optional call ID filter
-      responses:
-        '200':
-          description: Server-sent event stream
-          content:
-            text/event-stream:
-              schema:
-                type: string
   /v1/media/events:
     get:
       summary: Stream media lifecycle events from the media bridge
@@ -135,6 +117,12 @@ paths:
           schema:
             type: string
           description: Optional comma-separated list of media session IDs
+        - in: query
+          name: call_id
+          required: false
+          schema:
+            type: string
+          description: Optional call ID filter
       responses:
         '200':
           description: Server-sent event stream
@@ -159,7 +147,7 @@ components:
         type: string
       description: Idempotency token required by start and stop operations
   schemas:
-    SipParticipant:
+    CallParticipant:
       type: object
       required: [caller, callee, called_extension]
       properties:
@@ -175,20 +163,12 @@ components:
       properties:
         local_address:
           type: string
-          example: 10.10.4.18
         local_port:
           type: integer
-          minimum: 1
-          maximum: 65535
-          example: 20000
         remote_address:
           type: string
-          example: 10.10.4.20
         remote_port:
           type: integer
-          minimum: 1
-          maximum: 65535
-          example: 30000
     AIProfile:
       type: object
       required: [model_name, voice, instructions, greeting, vad_mode]
@@ -203,7 +183,6 @@ components:
           type: string
         vad_mode:
           type: string
-          example: server_vad
     MediaSettings:
       type: object
       properties:
@@ -225,9 +204,8 @@ components:
         direction:
           type: string
           enum: [inbound]
-          description: Only inbound media sessions are allowed
         participant:
-          $ref: '#/components/schemas/SipParticipant'
+          $ref: '#/components/schemas/CallParticipant'
         ai_profile:
           $ref: '#/components/schemas/AIProfile'
         media_settings:
@@ -291,7 +269,7 @@ components:
         status:
           type: string
           example: accepted
-    LifecycleEvent:
+    MediaLifecycleEvent:
       type: object
       required: [event_id, event_type, bridge_session_id, call_id, occurred_at, attributes]
       properties:
@@ -299,6 +277,7 @@ components:
           type: string
         event_type:
           type: string
+          example: media.session.active
         media_session_id:
           type: string
           nullable: true

@@ -2,17 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
-import os
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-import httpx
 from fastapi import FastAPI, Header, HTTPException, Query
-from fastapi.responses import PlainTextResponse
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel
 
@@ -46,12 +42,10 @@ class EventBus:
             await queue.put(event)
 
 
-app = FastAPI(title="MIMIR Media Bridge", version="1.1.0")
+app = FastAPI(title="MIMIR Media Bridge", version="2.0.0")
 _sessions: dict[str, BackendSession] = {}
 _event_bus = EventBus()
 _idempotency: dict[str, dict[str, Any]] = {}
-_observed_call_ids: set[str] = set()
-logger = logging.getLogger("media-bridge")
 backend_router = BackendRouter()
 
 RTP_PACKET_LOSS_PCT = Histogram(
@@ -107,41 +101,6 @@ async def _emit_event(event_type: str, record: BackendSession, attributes: dict[
     )
 
 
-def _structured_log(event: str, record: BackendSession, **fields: Any) -> None:
-    logger.info(
-        "structured=%s",
-        json.dumps(
-            {
-                "event": event,
-                "component": "media-bridge",
-                "call_id": record.call_id,
-                "bridge_session_id": record.session_id,
-                **fields,
-            },
-            sort_keys=True,
-        ),
-    )
-
-
-async def _consume_sip_call_events() -> None:
-    sip_url = os.getenv("SIP_FLOW_HANDLER_URL")
-    if not sip_url:
-        return
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream("GET", f"{sip_url.rstrip('/')}/v1/call-events") as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    payload = json.loads(line.replace("data: ", "", 1))
-                    if payload.get("call_id"):
-                        _observed_call_ids.add(payload["call_id"])
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    asyncio.create_task(_consume_sip_call_events())
-
-
 @app.post("/v1/media/sessions", response_model=MediaSession, status_code=201)
 async def create_media_session(request: CreateMediaSessionRequest) -> MediaSession:
     if request.direction.lower() != "inbound":
@@ -152,13 +111,15 @@ async def create_media_session(request: CreateMediaSessionRequest) -> MediaSessi
                 "message": "Media allocation is allowed only for inbound calls.",
             },
         )
+
     session_id = f"media-{uuid.uuid4()}"
     requested_runtime = request.metadata.get("bridge_runtime")
     backend = backend_router.choose_backend(request.call_id, requested_runtime=requested_runtime)
     record = backend.create(request, session_id=session_id)
     _sessions[session_id] = record
+
     await _emit_event(
-        "call.media_ready",
+        "media.session.created",
         record,
         {
             "called_extension": request.participant.called_extension,
@@ -171,7 +132,6 @@ async def create_media_session(request: CreateMediaSessionRequest) -> MediaSessi
             "remote_rtp": f"{request.rtp.remote_address}:{request.rtp.remote_port}",
         },
     )
-    _structured_log("session_created", record, runtime=record.runtime)
     return MediaSession(session_id=record.session_id, bridge_session_id=record.session_id, call_id=record.call_id, status=record.status)
 
 
@@ -184,16 +144,15 @@ async def start_media_session(session_id: str, idempotency_key: str = Header(...
     record = _sessions.get(session_id)
     if not record:
         raise HTTPException(status_code=404, detail="media session not found")
+
     if record.status not in {"active", "terminated"}:
         backend = backend_router.choose_backend(record.call_id, requested_runtime=record.runtime)
         backend.start(record)
         first_audio_latency = max(0.0, time.time() - record.created_at.timestamp())
         record.first_audio_at = time.time()
         FIRST_AUDIO_LATENCY_SECONDS.labels(runtime=record.runtime).observe(first_audio_latency)
-        await _emit_event("call.answered", record)
-        await _emit_event("call.first_audio", record, {"first_audio_latency_ms": round(first_audio_latency * 1000, 2)})
-        await _emit_event("call.active", record)
-        _structured_log("session_started", record, first_audio_latency_ms=round(first_audio_latency * 1000, 2), runtime=record.runtime)
+        await _emit_event("media.first_audio", record, {"first_audio_latency_ms": round(first_audio_latency * 1000, 2)})
+        await _emit_event("media.session.active", record)
 
     response = MediaSession(
         session_id=record.session_id,
@@ -219,11 +178,11 @@ async def stop_media_session(
     record = _sessions.get(session_id)
     if not record:
         raise HTTPException(status_code=404, detail="media session not found")
+
     backend = backend_router.choose_backend(record.call_id, requested_runtime=record.runtime)
     backend.stop(record, reason=body.reason)
-    await _emit_event("call.ended", record, {"reason": body.reason})
+    await _emit_event("media.session.ended", record, {"reason": body.reason})
     CALL_COMPLETION_TOTAL.labels(result="ended", reason=body.reason, runtime=record.runtime).inc()
-    _structured_log("session_ended", record, reason=body.reason, runtime=record.runtime)
     response = MediaSession(
         session_id=record.session_id,
         bridge_session_id=record.session_id,
@@ -268,17 +227,9 @@ async def post_session_telemetry(session_id: str, body: TelemetryPayload) -> dic
         FIRST_AUDIO_LATENCY_SECONDS.labels(runtime=record.runtime).observe(body.first_audio_latency_ms / 1000.0)
     if body.ws_errors:
         CALL_COMPLETION_TOTAL.labels(result="failed", reason="websocket_error", runtime=record.runtime).inc()
-    _structured_log(
-        "telemetry_ingested",
-        record,
-        runtime=record.runtime,
-        packet_loss_pct=body.packet_loss_pct,
-        jitter_ms=body.jitter_ms,
-        ws_reconnects=body.ws_reconnects,
-        ws_errors=body.ws_errors,
-    )
+
     await _emit_event(
-        "call.telemetry",
+        "media.telemetry",
         record,
         {
             "packet_loss_pct": body.packet_loss_pct,
@@ -291,26 +242,11 @@ async def post_session_telemetry(session_id: str, body: TelemetryPayload) -> dic
     return {"status": "accepted"}
 
 
-@app.get("/v1/call-events")
-async def stream_call_events(call_id: str | None = Query(default=None, description="Optional call_id filter")) -> StreamingResponse:
-    queue = _event_bus.subscribe()
-
-    async def event_generator():
-        try:
-            while True:
-                event = await queue.get()
-                if call_id and event["call_id"] != call_id:
-                    continue
-                yield f"event: {event['event_type']}\n"
-                yield f"data: {json.dumps(event)}\n\n"
-        finally:
-            _event_bus.unsubscribe(queue)
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-
 @app.get("/v1/media/events")
-async def stream_media_events(session_id: str | None = Query(default=None, description="Comma separated media session IDs")) -> StreamingResponse:
+async def stream_media_events(
+    session_id: str | None = Query(default=None, description="Optional comma-separated media session IDs"),
+    call_id: str | None = Query(default=None, description="Optional call ID filter"),
+) -> StreamingResponse:
     filter_ids = set(session_id.split(",")) if session_id else None
     queue = _event_bus.subscribe()
 
@@ -319,6 +255,8 @@ async def stream_media_events(session_id: str | None = Query(default=None, descr
             while True:
                 event = await queue.get()
                 if filter_ids and event["media_session_id"] not in filter_ids:
+                    continue
+                if call_id and event["call_id"] != call_id:
                     continue
                 yield f"event: {event['event_type']}\n"
                 yield f"data: {json.dumps(event)}\n\n"
@@ -330,7 +268,7 @@ async def stream_media_events(session_id: str | None = Query(default=None, descr
 
 @app.get("/healthz")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "media-bridge", "observed_calls": str(len(_observed_call_ids))}
+    return {"status": "ok", "service": "media-bridge"}
 
 
 @app.get("/metrics")

@@ -5,15 +5,13 @@ package mimir.media.v1;
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
-// Prototype controller contract aligned with the HTTP API implemented in this repository.
+// Prototype controller contract aligned with the media bridge HTTP API.
 // Scope notes:
 // - Inbound media only.
 // - Session lifecycle operations are keyed by session_id.
-// - Event streaming is split into call events and media events.
+// - Event streaming is exposed as a single media lifecycle stream.
 
-message Empty {}
-
-message SipParticipant {
+message CallParticipant {
   string caller = 1;
   string callee = 2;
   string called_extension = 3;
@@ -43,7 +41,7 @@ message MediaSettings {
 message CreateMediaSessionRequest {
   string call_id = 1;
   string direction = 2;
-  SipParticipant participant = 3;
+  CallParticipant participant = 3;
   AIProfile ai_profile = 4;
   MediaSettings media_settings = 5;
   RtpFlow rtp = 6;
@@ -98,7 +96,7 @@ message MediaSession {
   string reason = 5;
 }
 
-message CallEvent {
+message MediaLifecycleEvent {
   string event_id = 1;
   string event_type = 2;
   string media_session_id = 3;
@@ -108,12 +106,9 @@ message CallEvent {
   google.protobuf.Struct attributes = 7;
 }
 
-message CallEventSubscription {
-  string call_id = 1;
-}
-
 message MediaEventSubscription {
   repeated string session_id = 1;
+  string call_id = 2;
 }
 
 service MediaControlService {
@@ -122,6 +117,5 @@ service MediaControlService {
   rpc StopMediaSession(StopMediaSessionRequest) returns (MediaSession);
   rpc GetMediaSession(GetMediaSessionRequest) returns (MediaSession);
   rpc PostSessionTelemetry(PostSessionTelemetryRequest) returns (AcceptedResponse);
-  rpc StreamCallEvents(CallEventSubscription) returns (stream CallEvent);
-  rpc StreamMediaEvents(MediaEventSubscription) returns (stream CallEvent);
+  rpc StreamMediaEvents(MediaEventSubscription) returns (stream MediaLifecycleEvent);
 }

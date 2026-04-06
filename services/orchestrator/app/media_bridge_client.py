@@ -36,9 +36,9 @@ class MediaBridgeClient:
             response.raise_for_status()
             return response.json()
 
-    async def stream_call_events(self) -> AsyncIterator[dict]:
+    async def stream_media_events(self) -> AsyncIterator[dict]:
         async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream("GET", f"{self.base_url}/v1/call-events") as response:
+            async with client.stream("GET", f"{self.base_url}/v1/media/events") as response:
                 response.raise_for_status()
                 event_type = None
                 async for line in response.aiter_lines():

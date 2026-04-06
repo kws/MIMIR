@@ -7,14 +7,14 @@ from pydantic import BaseModel, Field
 
 
 class BridgeSessionStatus(str, Enum):
-    """Stable session states shared by controller + all backends."""
+    """Stable session states shared by the orchestrator and all media backends."""
 
     CREATED = "created"
     ACTIVE = "active"
     TERMINATED = "terminated"
 
 
-class SipParticipant(BaseModel):
+class CallParticipant(BaseModel):
     caller: str
     callee: str
     called_extension: str
@@ -44,7 +44,7 @@ class MediaSettings(BaseModel):
 class CreateMediaSessionRequest(BaseModel):
     call_id: str
     direction: Literal["inbound"] = "inbound"
-    participant: SipParticipant
+    participant: CallParticipant
     ai_profile: MediaSessionConfig
     media_settings: MediaSettings = Field(default_factory=MediaSettings)
     rtp: RtpFlow

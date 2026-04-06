@@ -2,8 +2,8 @@ groups:
   - name: mimir-runtime-slo
     interval: 30s
     rules:
-      - record: slo:invite_to_answer_latency_p95_seconds
-        expr: histogram_quantile(0.95, sum(rate(sip_invite_to_answer_latency_seconds_bucket[5m])) by (le))
+      - record: slo:inbound_to_active_latency_p95_seconds
+        expr: histogram_quantile(0.95, sum(rate(orchestrator_inbound_to_active_latency_seconds_bucket[5m])) by (le))
 
       - record: slo:first_audio_latency_p95_seconds_by_runtime
         expr: histogram_quantile(0.95, sum(rate(media_bridge_first_audio_latency_seconds_bucket[5m])) by (runtime, le))
@@ -27,12 +27,12 @@ groups:
           clamp_min(sum(rate(media_bridge_call_completion_total[5m])) by (runtime), 0.001)
 
       - alert: MimirInviteToAnswerLatencySLOBreached
-        expr: slo:invite_to_answer_latency_p95_seconds > 3
+        expr: slo:inbound_to_active_latency_p95_seconds > 3
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "INVITE→answer latency p95 is above 3 seconds"
+          summary: "Inbound→active latency p95 is above 3 seconds"
 
       - alert: MimirFirstAudioLatencySLOBreached
         expr: slo:first_audio_latency_p95_seconds_by_runtime > 5
