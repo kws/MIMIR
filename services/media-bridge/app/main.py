@@ -39,6 +39,7 @@ class MediaSessionConfig(BaseModel):
 
 class CreateMediaSessionRequest(BaseModel):
     call_id: str
+    direction: str = "inbound"
     participant: SipParticipant
     config: MediaSessionConfig
     rtp: RtpFlow
@@ -127,6 +128,14 @@ async def startup() -> None:
 
 @app.post("/v1/media/sessions", response_model=MediaSession, status_code=201)
 async def create_media_session(request: CreateMediaSessionRequest) -> MediaSession:
+    if request.direction.lower() != "inbound":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "MEDIA_ALLOCATION_REQUIRES_INBOUND_DIRECTION",
+                "message": "Media allocation is allowed only for inbound calls.",
+            },
+        )
     session_id = f"media-{uuid.uuid4()}"
     record = SessionRecord(session_id=session_id, call_id=request.call_id, status="created")
     _sessions[session_id] = record

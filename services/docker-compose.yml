@@ -12,6 +12,8 @@ services:
     environment:
       MEDIA_BRIDGE_URL: http://media-bridge:8081
       ALLOWED_EXTENSIONS: 2001,2002,2003
+      ALLOWED_TRUNK_SOURCES: trunk-a,trunk-b
+      MAX_ACTIVE_CALLS_PER_SOURCE: 20
     depends_on:
       - media-bridge
     ports:
