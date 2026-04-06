@@ -17,6 +17,35 @@ MIMIR is currently being rebuilt around a provider-agnostic Python core:
 - Keep provider-specific concerns at the edge adapter boundary.
 - Keep NAT traversal, RTP relay, registration, and provider signaling out of the orchestrator unless the work is explicitly about adapter contracts.
 
+## Python tooling baseline
+
+This repo uses a `uv` workspace for Python monorepo coordination:
+
+- Root workspace config: `pyproject.toml`
+- Service project configs:
+  - `services/orchestrator/pyproject.toml`
+  - `services/media-bridge/pyproject.toml`
+
+Use these commands from the repository root unless a task explicitly says otherwise:
+
+```bash
+uv sync --all-packages --dev
+uv run --all-packages ruff format .
+uv run --all-packages ruff check .
+uv run --package mimir-orchestrator pytest
+uv run --package mimir-media-bridge pytest
+```
+
+Testing expectations:
+
+- Unit tests use `pytest`.
+- Coverage is enabled via `pytest-cov` defaults in each service `pyproject.toml`.
+
+Packaging expectations:
+
+- New Python sub-projects should define `pyproject.toml` with `hatchling` as the build backend.
+- Keep provider-agnostic service boundaries intact when organizing packages.
+
 ## Legacy reference
 
 The old Java implementation is kept for reference only under:

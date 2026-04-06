@@ -12,6 +12,7 @@ The default Python stack currently ships the first two pieces plus a one-click P
 
 ## Project layout
 
+- `pyproject.toml` — root `uv` workspace and shared dev-tool configuration.
 - `services/orchestrator` — FastAPI orchestrator for normalized inbound-call control.
 - `services/media-bridge` — FastAPI media session service.
 - `services/config/ai-profiles.json` — default persona/profile mappings keyed by extension.
@@ -19,9 +20,41 @@ The default Python stack currently ships the first two pieces plus a one-click P
 - `contracts/` — published service contracts for the media bridge.
 - `observability/` — Prometheus/Grafana artifacts.
 
+## Tooling (uv workspace)
+
+MIMIR uses a Python monorepo layout with `uv` workspace coordination and `hatchling` package metadata:
+
+- Root workspace: `pyproject.toml`
+- Service projects:
+  - `services/orchestrator/pyproject.toml`
+  - `services/media-bridge/pyproject.toml`
+
+### Install dependencies
+
+```bash
+uv sync --all-packages --dev
+```
+
+### Format and lint
+
+```bash
+uv run --all-packages ruff format .
+uv run --all-packages ruff check .
+```
+
+### Unit tests with coverage
+
+```bash
+uv run --package mimir-orchestrator pytest
+uv run --package mimir-media-bridge pytest
+```
+
+Both service projects are configured to run `pytest` with `pytest-cov` via their `pyproject.toml` settings.
+
 ## Requirements
 
 - Docker + Docker Compose
+- `uv` for local Python workflows
 - OpenAI API key for the default `gpt-realtime-mini` path
 - Optional Gemini API key for Gemini Live fixture verification
 

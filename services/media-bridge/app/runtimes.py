@@ -55,8 +55,7 @@ class LiveRuntime(Protocol):
         request: RuntimeRequest,
         input_audio: PcmAudio,
         timeout_seconds: float,
-    ) -> RuntimeRunResult:
-        ...
+    ) -> RuntimeRunResult: ...
 
 
 class OpenAIRealtimeRuntime:
@@ -148,7 +147,11 @@ class OpenAIRealtimeRuntime:
                             first_audio_latency_ms = round((time.monotonic() - started_at) * 1000.0, 2)
                     continue
 
-                if event_type in {"response.output_text.delta", "response.audio_transcript.delta", "response.output_audio_transcript.delta"}:
+                if event_type in {
+                    "response.output_text.delta",
+                    "response.audio_transcript.delta",
+                    "response.output_audio_transcript.delta",
+                }:
                     delta = message.get("delta")
                     if delta:
                         output_transcript_parts.append(delta)
@@ -368,10 +371,7 @@ class GeminiLiveRuntime:
         await session.send_realtime_input(text=greeting_prompt)
 
     def _greeting_turn_text(self, greeting: str) -> str:
-        return (
-            "You are answering an inbound phone call and should speak first. "
-            f"Start by saying this greeting exactly: {greeting}"
-        )
+        return f"You are answering an inbound phone call and should speak first. Start by saying this greeting exactly: {greeting}"
 
 
 def _sample_rate_from_mime_type(mime_type: str | None, default_rate_hz: int) -> int:
