@@ -1,6 +1,6 @@
 # MIMIR Services (Python + PBX)
 
-This directory contains the deployable MIMIR stack:
+This directory contains the current MIMIR prototype stack:
 
 - **SIP Flow Handler** (`services/sip-flow-handler`)
 - **Media Bridge** (`services/media-bridge`)
@@ -11,18 +11,21 @@ The stack is designed for a single-click local deploy with only API keys in `.en
 ## Services
 
 1. **SIP Flow Handler** (`services/sip-flow-handler`)
-   - Owns SIP registration state, inbound INVITE policy checks, source/trunk controls, and call state machine.
+   - Owns controller-side invite policy checks, source/trunk controls, and call state machine.
    - Talks to Media Bridge exclusively over network control APIs.
+   - Currently exposes HTTP endpoints that model inbound SIP events; it does not yet register to a SIP provider or terminate SIP directly.
 
 2. **Media Bridge** (`services/media-bridge`)
-   - Owns RTP/media lifecycle abstractions, runtime selection, and AI/media bridge telemetry.
+   - Owns media-session abstractions, runtime selection, and AI/media bridge telemetry.
    - Enforces `direction == inbound` before allocating media sessions.
    - Exposes HTTP control APIs and an SSE event stream.
+   - Currently models media lifecycle in-process; it does not yet terminate RTP or attach to a live AI audio backend.
 
 3. **Asterisk PBX** (`services/pbx`)
    - Exposes SIP on `udp/5060`.
    - Exposes RTP media range on `udp/10000-10099`.
    - Ships with pre-configured extensions and passwords for quick softphone testing.
+   - Currently owns the only real SIP edge in the stack.
 
 ## Pre-configured SIP accounts
 
@@ -42,6 +45,8 @@ Dial any of `2001` to `2006` from extension `1000` to reach a scientist account.
 
 > Tip: register two SIP clients (for example `1000` and `2002`) to immediately test bi-directional audio.
 
+Those scientist extensions are PBX-local SIP endpoints today. They are not yet wired to trigger the HTTP controller path in `sip-flow-handler`.
+
 ## Configuration
 
 ### 1) Create environment file
@@ -55,7 +60,7 @@ Required: `OPENAI_API_KEY`.
 
 Optional: `SCIENTIST_MODEL_NAME` to globally switch model versions for every scientist profile without editing JSON.
 
-### 2) Start the full stack
+### 2) Start the prototype stack
 
 ```bash
 cd services
@@ -64,8 +69,8 @@ docker compose up --build
 
 ## Service endpoints
 
-- SIP Flow Handler: `http://localhost:8080`
-- Media Bridge: `http://localhost:8081`
+- SIP Flow Handler control API: `http://localhost:8080`
+- Media Bridge control API: `http://localhost:8081`
 - Asterisk SIP listener: `udp://localhost:5060`
 - Asterisk RTP range: `udp://localhost:10000-10099`
 
@@ -85,6 +90,15 @@ This maps extensions `2001/2002/2003/2004/2005/2006` to scientist-style prompts 
 
 No in-process references are permitted between SIP flow logic and media runtime logic; interaction is contract-driven over APIs/events.
 
+## Current gaps
+
+The stack does not yet provide the full inbound SIP-to-AI path described in the higher-level architecture:
+
+- No service currently registers upstream with a SIP provider on behalf of `sip-flow-handler`.
+- The PBX dialplan does not yet broker inbound calls to `sip-flow-handler` and onward to `media-bridge`.
+- `media-bridge` does not yet exchange live RTP/audio with Asterisk or OpenAI Realtime.
+- An independent orchestrator service has not been split out yet; monitoring and control remain embedded in the handler/runtime pair.
+
 ## Observability baseline
 
 - SIP Flow Handler and Media Bridge expose `GET /metrics` for Prometheus scraping.
@@ -101,8 +115,10 @@ No in-process references are permitted between SIP flow logic and media runtime 
 
 ## Ownership boundaries
 
-- **SIP Flow Handler owns SIP dialog termination**.
-- **Media Bridge owns media/websocket cleanup**.
+- **Target architecture:** SIP Flow Handler owns SIP dialog termination.
+- **Current implementation:** Asterisk owns SIP dialog termination for the local lab extensions.
+- **Target architecture:** Media Bridge owns media/websocket cleanup.
+- **Current implementation:** Media Bridge owns in-process session state and telemetry only.
 - **Controller contract/state model arbitrates timeout and failure transitions**.
 
 ## Inbound-only policy

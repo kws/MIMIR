@@ -7,6 +7,8 @@ services:
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       SIP_FLOW_HANDLER_URL: http://sip-flow-handler:8080
+    depends_on:
+      - pbx
     ports:
       - "8081:8081"
 
@@ -32,8 +34,6 @@ services:
     build:
       context: ./pbx
     container_name: mimir-pbx
-    depends_on:
-      - sip-flow-handler
     ports:
       - "5060:5060/udp"
       - "10000-10099:10000-10099/udp"

@@ -1,12 +1,12 @@
 # MIMIR 🧙‍♂️
 
-Python-first, inbound-only SIP-to-AI voice bridge.
+Python-first, inbound-only SIP-to-AI voice bridge prototype.
 
-MIMIR lets you route inbound SIP calls to AI personas (for example: historical scientists) using a clean three-service stack:
+MIMIR currently ships a three-service local lab stack:
 
-- **SIP Flow Handler** (`services/sip-flow-handler`) handles inbound invite policy, call state, and orchestration.
-- **Media Bridge** (`services/media-bridge`) handles media-session lifecycle, runtime routing, and telemetry.
-- **Asterisk PBX** (`services/pbx`) provides out-of-the-box SIP registrations and extension dialing.
+- **SIP Flow Handler** (`services/sip-flow-handler`) exposes HTTP control endpoints for invite policy, call state, and orchestration logic.
+- **Media Bridge** (`services/media-bridge`) exposes HTTP control endpoints for media-session lifecycle, runtime routing, and telemetry.
+- **Asterisk PBX** (`services/pbx`) provides local SIP registrations, extension dialing, and RTP ports for sandbox testing.
 
 ## Project layout
 
@@ -22,7 +22,7 @@ MIMIR lets you route inbound SIP calls to AI personas (for example: historical s
 - Docker + Docker Compose
 - OpenAI API key
 
-## Quickstart (single-click stack)
+## Quickstart (local control-plane sandbox)
 
 ```bash
 cd services
@@ -34,7 +34,7 @@ docker compose up --build
 
 ## SIP accounts and extensions
 
-The PBX boots with these accounts:
+The PBX boots with these local accounts:
 
 | Role | Extension | Password |
 |---|---:|---|
@@ -48,12 +48,25 @@ The PBX boots with these accounts:
 
 Register your SIP client to `localhost:5060/udp` and dial one of the scientist extensions.
 
+At the moment, those scientist extensions are still PBX-local SIP endpoints. Dialing them exercises the PBX dialplan, but it does not yet broker the call through `sip-flow-handler` into a live AI media runtime.
+
 ## Service endpoints
 
-- SIP Flow Handler: `http://localhost:8080`
-- Media Bridge: `http://localhost:8081`
+- SIP Flow Handler control API: `http://localhost:8080`
+- Media Bridge control API: `http://localhost:8081`
 - Asterisk SIP listener: `udp://localhost:5060`
 - Asterisk RTP: `udp://localhost:10000-10099`
+
+## Current Status
+
+The repository currently implements the control plane more completely than the live telephony path:
+
+- `sip-flow-handler` does not yet register to an upstream SIP provider or listen for SIP directly.
+- The PBX dialplan does not yet hand inbound extension calls to `sip-flow-handler`.
+- `media-bridge` tracks sessions and emits lifecycle events, but it does not yet terminate RTP or connect a live AI audio backend.
+- A separate orchestrator service is not present yet; orchestration logic currently lives inside `sip-flow-handler`.
+
+In other words, the stack is a useful prototype for controller state transitions and observability, but not yet an end-to-end inbound SIP-to-AI bridge.
 
 ## Inbound-only policy
 

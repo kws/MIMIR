@@ -5,25 +5,25 @@ package mimir.media.v1;
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
-// Semantic versioning policy for this contract:
-// - Breaking wire/API changes require a MAJOR version bump and a new package namespace (e.g. mimir.media.v2).
-// - Backward-compatible additions (new optional fields/RPCs/enum values) are MINOR.
-// - Documentation-only adjustments are PATCH.
-// Breaking changes without a MAJOR bump are forbidden so alternate media implementations remain safely swappable.
+// Prototype controller contract aligned with the HTTP API implemented in this repository.
+// Scope notes:
+// - Inbound media only.
+// - Session lifecycle operations are keyed by session_id.
+// - Event streaming is split into call events and media events.
 
 message Empty {}
 
-message Endpoint {
-  string ip = 1;
-  uint32 port = 2;
+message SipParticipant {
+  string caller = 1;
+  string callee = 2;
+  string called_extension = 3;
 }
 
-message CreateMediaSessionRequest {
-  string call_id = 1;
-  Endpoint local_rtp = 2;
-  Endpoint remote_rtp = 3;
-  AIProfile ai_profile = 4;
-  MediaSettings media_settings = 5;
+message RtpFlow {
+  string local_address = 1;
+  uint32 local_port = 2;
+  string remote_address = 3;
+  uint32 remote_port = 4;
 }
 
 message AIProfile {
@@ -40,69 +40,88 @@ message MediaSettings {
   uint32 sample_rate_hz = 3;
 }
 
-message StartMediaRequest {
+message CreateMediaSessionRequest {
   string call_id = 1;
+  string direction = 2;
+  SipParticipant participant = 3;
+  AIProfile ai_profile = 4;
+  MediaSettings media_settings = 5;
+  RtpFlow rtp = 6;
+  map<string, string> metadata = 7;
 }
 
-message StopMediaRequest {
-  string call_id = 1;
+message StartMediaSessionRequest {
+  string session_id = 1;
+  string idempotency_key = 2;
+}
+
+message StopMediaSessionRequest {
+  string session_id = 1;
   string reason = 2;
+  string idempotency_key = 3;
 }
 
-message GetMediaHealthRequest {
-  string call_id = 1;
+message GetMediaSessionRequest {
+  string session_id = 1;
 }
 
-message MediaSession {
-  string media_session_id = 1;
-  string call_id = 2;
-  MediaStatus status = 3;
-  string reason = 4;
+message TelemetryPayload {
+  string runtime = 1;
+  double packet_loss_pct = 2;
+  double jitter_ms = 3;
+  uint32 ws_reconnects = 4;
+  uint32 ws_errors = 5;
+  double first_audio_latency_ms = 6;
+}
+
+message PostSessionTelemetryRequest {
+  string session_id = 1;
+  TelemetryPayload telemetry = 2;
+}
+
+message AcceptedResponse {
+  string status = 1;
 }
 
 enum MediaStatus {
   MEDIA_STATUS_UNSPECIFIED = 0;
   MEDIA_STATUS_CREATED = 1;
-  MEDIA_STATUS_STARTING = 2;
-  MEDIA_STATUS_ACTIVE = 3;
-  MEDIA_STATUS_STOPPING = 4;
-  MEDIA_STATUS_ENDED = 5;
-  MEDIA_STATUS_FAILED = 6;
+  MEDIA_STATUS_ACTIVE = 2;
+  MEDIA_STATUS_TERMINATED = 3;
 }
 
-message MediaHealth {
-  string call_id = 1;
-  double jitter_ms = 2;
-  double packet_loss_percent = 3;
-  double ws_latency_ms = 4;
-}
-
-enum MediaEventTopic {
-  MEDIA_EVENT_TOPIC_UNSPECIFIED = 0;
-  MEDIA_READY = 1;
-  FIRST_AUDIO_RECEIVED = 2;
-  MEDIA_ERROR = 3;
-  MEDIA_ENDED = 4;
-}
-
-message MediaEvent {
-  string event_id = 1;
-  MediaEventTopic topic = 2;
+message MediaSession {
+  string session_id = 1;
+  string bridge_session_id = 2;
   string call_id = 3;
-  google.protobuf.Timestamp occurred_at = 4;
-  google.protobuf.Struct payload = 5;
+  MediaStatus status = 4;
+  string reason = 5;
 }
 
-message EventSubscription {
+message CallEvent {
+  string event_id = 1;
+  string event_type = 2;
+  string media_session_id = 3;
+  string bridge_session_id = 4;
+  string call_id = 5;
+  google.protobuf.Timestamp occurred_at = 6;
+  google.protobuf.Struct attributes = 7;
+}
+
+message CallEventSubscription {
   string call_id = 1;
+}
+
+message MediaEventSubscription {
+  repeated string session_id = 1;
 }
 
 service MediaControlService {
   rpc CreateMediaSession(CreateMediaSessionRequest) returns (MediaSession);
-  rpc StartMedia(StartMediaRequest) returns (MediaSession);
-  rpc StopMedia(StopMediaRequest) returns (MediaSession);
-  rpc GetMediaHealth(GetMediaHealthRequest) returns (MediaHealth);
-
-  // Event topics: MEDIA_READY, FIRST_AUDIO_RECEIVED, MEDIA_ERROR, MEDIA_ENDED.
-  rpc StreamEvents(EventSubscription) returns (stream MediaEvent);
+  rpc StartMediaSession(StartMediaSessionRequest) returns (MediaSession);
+  rpc StopMediaSession(StopMediaSessionRequest) returns (MediaSession);
+  rpc GetMediaSession(GetMediaSessionRequest) returns (MediaSession);
+  rpc PostSessionTelemetry(PostSessionTelemetryRequest) returns (AcceptedResponse);
+  rpc StreamCallEvents(CallEventSubscription) returns (stream CallEvent);
+  rpc StreamMediaEvents(MediaEventSubscription) returns (stream CallEvent);
 }
