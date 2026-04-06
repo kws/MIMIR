@@ -2,57 +2,58 @@
 
 Python-first, inbound-only SIP-to-AI voice bridge.
 
-MIMIR lets you route inbound SIP calls to AI personas (for example: historical scientists) using a clean two-service architecture:
+MIMIR lets you route inbound SIP calls to AI personas (for example: historical scientists) using a clean three-service stack:
 
 - **SIP Flow Handler** (`services/sip-flow-handler`) handles inbound invite policy, call state, and orchestration.
 - **Media Bridge** (`services/media-bridge`) handles media-session lifecycle, runtime routing, and telemetry.
+- **Asterisk PBX** (`services/pbx`) provides out-of-the-box SIP registrations and extension dialing.
 
 ## Project layout
 
 - `services/sip-flow-handler` — FastAPI service for SIP-side policy + call orchestration.
 - `services/media-bridge` — FastAPI service for media control/session runtime.
+- `services/pbx` — Containerized Asterisk PBX with pre-configured users/extensions.
+- `services/config/ai-profiles.json` — default scientist AI profile mappings for extensions.
 - `contracts/` — OpenAPI + protobuf controller contracts.
 - `observability/` — Prometheus/Grafana artifacts.
 
 ## Requirements
 
-- Python 3.11+
-- `pip` (or your preferred Python package manager)
-- OpenAI API key (if you connect a real AI runtime)
+- Docker + Docker Compose
+- OpenAI API key
 
-## Quickstart (local)
-
-Run both services in separate terminals.
-
-```bash
-# terminal 1
-cd services/media-bridge
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8081
-```
-
-```bash
-# terminal 2
-cd services/sip-flow-handler
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-MEDIA_BRIDGE_URL=http://localhost:8081 uvicorn app.main:app --host 0.0.0.0 --port 8080
-```
-
-## Docker Compose
+## Quickstart (single-click stack)
 
 ```bash
 cd services
+cp .env.example .env
+# required: OPENAI_API_KEY
+# optional: SCIENTIST_MODEL_NAME to test a different model version
 docker compose up --build
 ```
 
-Services:
+## SIP accounts and extensions
+
+The PBX boots with these accounts:
+
+| Role | Extension | Password |
+|---|---:|---|
+| Operator | `1000` | `lab1000` |
+| Scientist - Arthur C. Clarke | `2001` | `clarke2001` |
+| Scientist - Albert Einstein | `2002` | `einstein2002` |
+| Scientist - Erwin Schrödinger | `2003` | `schrodinger2003` |
+| Scientist - Marie Curie | `2004` | `curie2004` |
+| Scientist - Niels Bohr | `2005` | `bohr2005` |
+| Scientist - Nikola Tesla | `2006` | `tesla2006` |
+
+Register your SIP client to `localhost:5060/udp` and dial one of the scientist extensions.
+
+## Service endpoints
 
 - SIP Flow Handler: `http://localhost:8080`
 - Media Bridge: `http://localhost:8081`
+- Asterisk SIP listener: `udp://localhost:5060`
+- Asterisk RTP: `udp://localhost:10000-10099`
 
 ## Inbound-only policy
 
