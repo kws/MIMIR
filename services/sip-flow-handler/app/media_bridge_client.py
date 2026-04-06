@@ -17,25 +17,28 @@ class MediaBridgeClient:
             response.raise_for_status()
             return response.json()
 
-    async def start_session(self, session_id: str) -> dict:
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(f"{self.base_url}/v1/media/sessions/{session_id}/start")
-            response.raise_for_status()
-            return response.json()
-
-    async def stop_session(self, session_id: str, reason: str) -> dict:
+    async def attach_media(self, session_id: str, idempotency_key: str) -> dict:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(
-                f"{self.base_url}/v1/media/sessions/{session_id}/stop", json={"reason": reason}
+                f"{self.base_url}/v1/media/sessions/{session_id}/start",
+                headers={"Idempotency-Key": idempotency_key},
             )
             response.raise_for_status()
             return response.json()
 
-    async def stream_events(self, session_id: str) -> AsyncIterator[dict]:
+    async def terminate_media(self, session_id: str, reason: str, idempotency_key: str) -> dict:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(
+                f"{self.base_url}/v1/media/sessions/{session_id}/stop",
+                json={"reason": reason},
+                headers={"Idempotency-Key": idempotency_key},
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def stream_call_events(self) -> AsyncIterator[dict]:
         async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "GET", f"{self.base_url}/v1/media/events", params={"session_id": session_id}
-            ) as response:
+            async with client.stream("GET", f"{self.base_url}/v1/call-events") as response:
                 response.raise_for_status()
                 event_type = None
                 async for line in response.aiter_lines():
