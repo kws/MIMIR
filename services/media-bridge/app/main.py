@@ -28,10 +28,14 @@ class RtpFlow(BaseModel):
 
 
 class MediaSessionConfig(BaseModel):
-    model: str
+    model_name: str
     voice: str
     instructions: str
     greeting: str
+    vad_mode: str
+
+
+class MediaSettings(BaseModel):
     input_codec: str = "g711_ulaw"
     output_codec: str = "g711_ulaw"
     sample_rate_hz: int = 8000
@@ -41,7 +45,8 @@ class CreateMediaSessionRequest(BaseModel):
     call_id: str
     direction: str = "inbound"
     participant: SipParticipant
-    config: MediaSessionConfig
+    ai_profile: MediaSessionConfig
+    media_settings: MediaSettings = Field(default_factory=MediaSettings)
     rtp: RtpFlow
     metadata: dict[str, str] = Field(default_factory=dict)
 
@@ -144,8 +149,11 @@ async def create_media_session(request: CreateMediaSessionRequest) -> MediaSessi
         record,
         {
             "called_extension": request.participant.called_extension,
-            "input_codec": request.config.input_codec,
-            "output_codec": request.config.output_codec,
+            "input_codec": request.media_settings.input_codec,
+            "output_codec": request.media_settings.output_codec,
+            "model_name": request.ai_profile.model_name,
+            "voice": request.ai_profile.voice,
+            "vad_mode": request.ai_profile.vad_mode,
             "local_rtp": f"{request.rtp.local_address}:{request.rtp.local_port}",
             "remote_rtp": f"{request.rtp.remote_address}:{request.rtp.remote_port}",
         },

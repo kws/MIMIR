@@ -119,9 +119,36 @@ components:
           minimum: 1
           maximum: 65535
           example: 22222
+    AIProfile:
+      type: object
+      required: [model_name, voice, instructions, greeting, vad_mode]
+      properties:
+        model_name:
+          type: string
+        voice:
+          type: string
+        instructions:
+          type: string
+        greeting:
+          type: string
+        vad_mode:
+          type: string
+          example: server_vad
+    MediaSettings:
+      type: object
+      properties:
+        input_codec:
+          type: string
+          default: g711_ulaw
+        output_codec:
+          type: string
+          default: g711_ulaw
+        sample_rate_hz:
+          type: integer
+          default: 8000
     CreateMediaSessionRequest:
       type: object
-      required: [call_id, direction, codec, local_rtp, remote_rtp, ai_profile]
+      required: [call_id, direction, local_rtp, remote_rtp, ai_profile]
       properties:
         call_id:
           type: string
@@ -129,18 +156,14 @@ components:
           type: string
           enum: [inbound]
           description: Mandatory policy field; only inbound calls are eligible for media allocation.
-        codec:
-          type: string
-          description: Codec name negotiated for RTP media
-          example: PCMU
         local_rtp:
           $ref: '#/components/schemas/Endpoint'
         remote_rtp:
           $ref: '#/components/schemas/Endpoint'
         ai_profile:
-          type: string
-          description: Selected AI behavior profile/preset
-          example: support_agent_v1
+          $ref: '#/components/schemas/AIProfile'
+        media_settings:
+          $ref: '#/components/schemas/MediaSettings'
     StopMediaRequest:
       type: object
       required: [reason]
