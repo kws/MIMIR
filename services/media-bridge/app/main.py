@@ -6,7 +6,6 @@ import logging
 import os
 import time
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -15,67 +14,10 @@ from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-
-class SipParticipant(BaseModel):
-    caller: str
-    callee: str
-    called_extension: str
-
-
-class RtpFlow(BaseModel):
-    local_address: str
-    local_port: int
-    remote_address: str
-    remote_port: int
-
-
-class MediaSessionConfig(BaseModel):
-    model_name: str
-    voice: str
-    instructions: str
-    greeting: str
-    vad_mode: str
-
-
-class MediaSettings(BaseModel):
-    input_codec: str = "g711_ulaw"
-    output_codec: str = "g711_ulaw"
-    sample_rate_hz: int = 8000
-
-
-class CreateMediaSessionRequest(BaseModel):
-    call_id: str
-    direction: str = "inbound"
-    participant: SipParticipant
-    ai_profile: MediaSessionConfig
-    media_settings: MediaSettings = Field(default_factory=MediaSettings)
-    rtp: RtpFlow
-    metadata: dict[str, str] = Field(default_factory=dict)
-
-
-class StopMediaSessionRequest(BaseModel):
-    reason: str = "normal_clearing"
-
-
-class MediaSession(BaseModel):
-    session_id: str
-    bridge_session_id: str
-    call_id: str
-    status: str
-    reason: str | None = None
-
-
-@dataclass
-class SessionRecord:
-    session_id: str
-    call_id: str
-    status: str
-    reason: str | None = None
-    runtime: str = "python"
-    first_audio_at: float | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+from .backends import BackendRouter, BackendSession
+from .controller_contract import CreateMediaSessionRequest, MediaSession, StopMediaSessionRequest
 
 
 class TelemetryPayload(BaseModel):
@@ -105,11 +47,12 @@ class EventBus:
 
 
 app = FastAPI(title="MIMIR Media Bridge", version="1.1.0")
-_sessions: dict[str, SessionRecord] = {}
+_sessions: dict[str, BackendSession] = {}
 _event_bus = EventBus()
 _idempotency: dict[str, dict[str, Any]] = {}
 _observed_call_ids: set[str] = set()
 logger = logging.getLogger("media-bridge")
+backend_router = BackendRouter()
 
 RTP_PACKET_LOSS_PCT = Histogram(
     "media_bridge_rtp_packet_loss_pct",
@@ -150,7 +93,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _emit_event(event_type: str, record: SessionRecord, attributes: dict[str, Any] | None = None) -> None:
+async def _emit_event(event_type: str, record: BackendSession, attributes: dict[str, Any] | None = None) -> None:
     await _event_bus.publish(
         {
             "event_id": str(uuid.uuid4()),
@@ -164,7 +107,7 @@ async def _emit_event(event_type: str, record: SessionRecord, attributes: dict[s
     )
 
 
-def _structured_log(event: str, record: SessionRecord, **fields: Any) -> None:
+def _structured_log(event: str, record: BackendSession, **fields: Any) -> None:
     logger.info(
         "structured=%s",
         json.dumps(
@@ -210,12 +153,9 @@ async def create_media_session(request: CreateMediaSessionRequest) -> MediaSessi
             },
         )
     session_id = f"media-{uuid.uuid4()}"
-    record = SessionRecord(
-        session_id=session_id,
-        call_id=request.call_id,
-        status="created",
-        runtime=request.metadata.get("bridge_runtime", "python"),
-    )
+    requested_runtime = request.metadata.get("bridge_runtime")
+    backend = backend_router.choose_backend(request.call_id, requested_runtime=requested_runtime)
+    record = backend.create(request, session_id=session_id)
     _sessions[session_id] = record
     await _emit_event(
         "call.media_ready",
@@ -245,7 +185,8 @@ async def start_media_session(session_id: str, idempotency_key: str = Header(...
     if not record:
         raise HTTPException(status_code=404, detail="media session not found")
     if record.status not in {"active", "terminated"}:
-        record.status = "active"
+        backend = backend_router.choose_backend(record.call_id, requested_runtime=record.runtime)
+        backend.start(record)
         first_audio_latency = max(0.0, time.time() - record.created_at.timestamp())
         record.first_audio_at = time.time()
         FIRST_AUDIO_LATENCY_SECONDS.labels(runtime=record.runtime).observe(first_audio_latency)
@@ -278,8 +219,8 @@ async def stop_media_session(
     record = _sessions.get(session_id)
     if not record:
         raise HTTPException(status_code=404, detail="media session not found")
-    record.status = "terminated"
-    record.reason = body.reason
+    backend = backend_router.choose_backend(record.call_id, requested_runtime=record.runtime)
+    backend.stop(record, reason=body.reason)
     await _emit_event("call.ended", record, {"reason": body.reason})
     CALL_COMPLETION_TOTAL.labels(result="ended", reason=body.reason, runtime=record.runtime).inc()
     _structured_log("session_ended", record, reason=body.reason, runtime=record.runtime)

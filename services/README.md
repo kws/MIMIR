@@ -28,6 +28,30 @@ This directory introduces a strict split between SIP control and media runtime f
 
 No in-process object references are permitted between SIP flow logic and media runtime logic; only remote API calls/events.
 
+## Four-Phase Runtime Migration Plan
+
+The extraction follows an incremental, low-risk rollout with a **stable controller contract and state model** across all phases:
+
+1. **Phase 1 — Controller contract extraction**
+   - Keep existing Java media internals as-is.
+   - Lock controller API/event/state contract (`contracts/media-control.openapi.yaml`, `contracts/media-control.proto`).
+2. **Phase 2 — Python SIP handler integration**
+   - Implement SIP handler logic against controller APIs only.
+   - Keep Java media bridge path as the default backend.
+3. **Phase 3 — Second media backend behind same contract**
+   - Add an alternative high-performance backend (for example Rust/JVM optimized path) under the same controller contract.
+   - No SIP-side contract or call-state model changes allowed.
+4. **Phase 4 — Percentage-based A/B**
+   - Route traffic by deterministic percentage split.
+   - Compare KPI deltas (invite→answer, first-audio, websocket error/reconnect, RTP jitter/loss) before full cutover.
+
+### Stability guardrails
+
+- `MEDIA_BACKEND_SECONDARY_PERCENT` controls percentage routed to secondary backend (0-100).
+- Backend routing is deterministic by `call_id` hash to keep retries/idempotency stable.
+- Runtime selection can be pinned per call via `metadata.bridge_runtime` for targeted validation.
+- Session states remain stable (`created`, `active`, `terminated`) independent of backend.
+
 ## Ownership and Failure Arbitration Rules
 
 ### Termination ownership boundaries
