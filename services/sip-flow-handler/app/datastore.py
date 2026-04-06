@@ -28,6 +28,10 @@ class CallDatastore(ABC):
     async def reserve_idempotency(self, action: str, key: str, value: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_call_projections(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
 
 class InMemoryDatastore(CallDatastore):
     def __init__(self) -> None:
@@ -54,6 +58,9 @@ class InMemoryDatastore(CallDatastore):
             return False, self._idempotency[compound]
         self._idempotency[compound] = value
         return True, None
+
+    async def list_call_projections(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self._projections.values()]
 
 
 class RedisDatastore(CallDatastore):
@@ -83,6 +90,13 @@ class RedisDatastore(CallDatastore):
             return True, None
         raw = await self._redis.get(bucket)
         return False, json.loads(raw) if raw else None
+
+    async def list_call_projections(self) -> list[dict[str, Any]]:
+        keys = await self._redis.keys("call:*:projection")
+        if not keys:
+            return []
+        raw_items = await self._redis.mget(keys)
+        return [json.loads(item) for item in raw_items if item]
 
 
 class PostgresDatastore(CallDatastore):
@@ -173,6 +187,12 @@ class PostgresDatastore(CallDatastore):
                 key,
             )
             return False, dict(row["payload"]) if row else None
+
+    async def list_call_projections(self) -> list[dict[str, Any]]:
+        pool = await self._pool_or_init()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT payload FROM call_projection")
+            return [dict(row["payload"]) for row in rows]
 
 
 def create_datastore() -> CallDatastore:

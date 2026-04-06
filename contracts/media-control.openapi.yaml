@@ -4,6 +4,7 @@ info:
   version: 1.0.0
   description: |
     Versioned contract between Media Controller and Media Bridge.
+    This control contract is for inbound call handling only.
 
     Semantic versioning requirements:
       - MAJOR: Breaking contract changes (field removals/renames/type changes, required-ness tightening, route deletions, enum value removals).
@@ -120,10 +121,14 @@ components:
           example: 22222
     CreateMediaSessionRequest:
       type: object
-      required: [call_id, codec, local_rtp, remote_rtp, ai_profile]
+      required: [call_id, direction, codec, local_rtp, remote_rtp, ai_profile]
       properties:
         call_id:
           type: string
+        direction:
+          type: string
+          enum: [inbound]
+          description: Mandatory policy field; only inbound calls are eligible for media allocation.
         codec:
           type: string
           description: Codec name negotiated for RTP media

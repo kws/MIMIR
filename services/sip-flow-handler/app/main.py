@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import uuid
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ class InvitePayload(BaseModel):
     caller: str
     callee: str
     called_extension: str
+    direction: str = "inbound"
     sip_headers: dict[str, str] = Field(default_factory=dict)
     rtp: dict[str, Any]
 
@@ -84,6 +86,26 @@ media_client = MediaBridgeClient(os.getenv("MEDIA_BRIDGE_URL", "http://localhost
 policy_engine = PolicyEngine(set(os.getenv("ALLOWED_EXTENSIONS", "2001,2002,2003").split(",")))
 datastore = create_datastore()
 event_bus = EventBus()
+logger = logging.getLogger("sip-flow-handler")
+
+ALLOWED_TRUNK_SOURCES = {item.strip() for item in os.getenv("ALLOWED_TRUNK_SOURCES", "").split(",") if item.strip()}
+MAX_ACTIVE_CALLS_PER_SOURCE = int(os.getenv("MAX_ACTIVE_CALLS_PER_SOURCE", "20"))
+TERMINAL_STATES = {CallState.ENDED.value, CallState.FAILED.value}
+OUTBOUND_BLOCKED_ERROR_CODE = "OUTBOUND_ORIGINATION_DISABLED"
+OUTBOUND_BLOCKED_HTTP_STATUS = 403
+
+
+def _audit_log(event: str, details: dict[str, Any]) -> None:
+    logger.warning("audit_event=%s details=%s", event, json.dumps(details, sort_keys=True))
+
+
+async def _active_calls_for_source(source_id: str) -> int:
+    projections = await datastore.list_call_projections()
+    return sum(
+        1
+        for projection in projections
+        if projection.get("source_id") == source_id and projection.get("state") not in TERMINAL_STATES
+    )
 
 
 def _reduce_state(events: list[dict[str, Any]]) -> CallState:
@@ -148,12 +170,65 @@ async def _consume_media_call_events() -> None:
 
 @app.post("/v1/sip/invites")
 async def inbound_invite(invite: InvitePayload, idempotency_key: str = Header(..., alias="Idempotency-Key")) -> dict[str, Any]:
+    source_id = invite.sip_headers.get("X-Trunk-Source") or invite.sip_headers.get("X-Source")
+
+    if invite.direction.lower() != "inbound" or invite.sip_headers.get("X-Originate-Request", "false").lower() == "true":
+        _audit_log(
+            "origination_attempt_rejected",
+            {
+                "error_code": OUTBOUND_BLOCKED_ERROR_CODE,
+                "call_id": invite.call_id,
+                "direction": invite.direction,
+                "source_id": source_id,
+                "caller": invite.caller,
+                "callee": invite.callee,
+            },
+        )
+        raise HTTPException(
+            status_code=OUTBOUND_BLOCKED_HTTP_STATUS,
+            detail={
+                "error_code": OUTBOUND_BLOCKED_ERROR_CODE,
+                "message": "Outbound call origination is disabled; only inbound INVITE requests are allowed.",
+            },
+        )
+
+    if ALLOWED_TRUNK_SOURCES and source_id not in ALLOWED_TRUNK_SOURCES:
+        _audit_log(
+            "source_not_allowlisted",
+            {"call_id": invite.call_id, "source_id": source_id, "allowed_sources": sorted(ALLOWED_TRUNK_SOURCES)},
+        )
+        raise HTTPException(status_code=403, detail={"error_code": "SOURCE_NOT_ALLOWLISTED", "message": "SIP source is not allowlisted"})
+
+    if source_id:
+        active_calls = await _active_calls_for_source(source_id)
+        if active_calls >= MAX_ACTIVE_CALLS_PER_SOURCE:
+            _audit_log(
+                "source_rate_limited",
+                {"call_id": invite.call_id, "source_id": source_id, "active_calls": active_calls, "limit": MAX_ACTIVE_CALLS_PER_SOURCE},
+            )
+            raise HTTPException(
+                status_code=429,
+                detail={"error_code": "SOURCE_RATE_LIMIT_EXCEEDED", "message": "Too many active calls for source/trunk"},
+            )
+
     reserved, prior = await datastore.reserve_idempotency("accept", idempotency_key, {"call_id": invite.call_id})
     if not reserved:
         projection = await datastore.load_call_projection(invite.call_id)
         return {"idempotent_replay": True, **(projection or prior or {"call_id": invite.call_id})}
 
-    await _publish_event(invite.call_id, "call.new", {"projection": {"participant": invite.model_dump(exclude={"rtp", "sip_headers"}), "rtp": invite.rtp}})
+    await _publish_event(
+        invite.call_id,
+        "call.new",
+        {
+            "projection": {
+                "participant": invite.model_dump(exclude={"rtp", "sip_headers"}),
+                "rtp": invite.rtp,
+                "source_id": source_id,
+                "call_log_required": True,
+            }
+        },
+    )
+    _audit_log("call_logged", {"call_id": invite.call_id, "source_id": source_id, "direction": invite.direction})
     await _publish_event(invite.call_id, "call.inbound_ringing", {"projection": {"ringing": True}})
 
     accepted, policy_reason = policy_engine.evaluate_invite(invite)
@@ -166,6 +241,7 @@ async def inbound_invite(invite: InvitePayload, idempotency_key: str = Header(..
     media = await media_client.create_session(
         {
             "call_id": invite.call_id,
+            "direction": "inbound",
             "participant": {"caller": invite.caller, "callee": invite.callee, "called_extension": invite.called_extension},
             "config": {
                 "model": "gpt-4o-realtime-preview-2024-12-17",
