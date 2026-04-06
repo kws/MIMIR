@@ -22,7 +22,8 @@ The default Python stack currently ships the first two pieces plus a one-click P
 ## Requirements
 
 - Docker + Docker Compose
-- OpenAI API key
+- OpenAI API key for the default `gpt-realtime-mini` path
+- Optional Gemini API key for Gemini Live fixture verification
 
 ## Quickstart
 
@@ -44,8 +45,9 @@ The repository is now explicitly organized around a provider-agnostic boundary:
 
 - The orchestrator accepts normalized inbound-call requests from future edge adapters at `POST /v1/calls/inbound`.
 - The media bridge exposes session creation, activation, termination, telemetry, and SSE media lifecycle events.
+- The media bridge can now verify live model runtimes with prerecorded WAV fixtures against OpenAI Realtime and Gemini Live.
 - A PBX fixture is included in the default stack for simple local testing, but it is not yet wired into the orchestrator as a real adapter.
-- The current media bridge still models session state and telemetry in-process; live RTP and provider-specific media handling remain future work.
+- Live RTP and provider-specific media handling still remain future work.
 
 ## Contracts
 

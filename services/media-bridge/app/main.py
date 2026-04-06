@@ -10,19 +10,51 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from .backends import BackendRouter, BackendSession
+from .backends import BackendRouter, BackendSession, FixtureRunSummary
 from .controller_contract import CreateMediaSessionRequest, MediaSession, StopMediaSessionRequest
+from .runtimes import RuntimeConfigurationError
 
 
 class TelemetryPayload(BaseModel):
-    runtime: str = "python"
+    runtime: str = "openai-realtime"
     packet_loss_pct: float | None = None
     jitter_ms: float | None = None
     ws_reconnects: int = 0
     ws_errors: int = 0
     first_audio_latency_ms: float | None = None
+
+
+class RunFixtureRequest(BaseModel):
+    fixture_path: str | None = Field(
+        default=None,
+        description="Optional absolute or working-directory-relative path to a mono 16-bit PCM WAV file.",
+    )
+    output_wav_path: str | None = Field(
+        default=None,
+        description="Optional output path for the model's generated audio. Defaults to the media bridge artifact directory.",
+    )
+    timeout_seconds: float = Field(default=45.0, ge=1.0, le=300.0)
+    include_greeting: bool = Field(
+        default=False,
+        description="When true, the bridge asks the model to speak its configured greeting before handling the fixture audio.",
+    )
+
+
+class FixtureRunResponse(BaseModel):
+    session_id: str
+    call_id: str
+    runtime: str
+    fixture_path: str | None
+    output_wav_path: str
+    output_sample_rate_hz: int
+    input_duration_ms: float
+    output_duration_ms: float
+    first_audio_latency_ms: float | None = None
+    input_transcript: str | None = None
+    output_transcript: str | None = None
+    vendor_session_id: str | None = None
 
 
 class EventBus:
@@ -42,7 +74,7 @@ class EventBus:
             await queue.put(event)
 
 
-app = FastAPI(title="MIMIR Media Bridge", version="2.0.0")
+app = FastAPI(title="MIMIR Media Bridge", version="2.1.0")
 _sessions: dict[str, BackendSession] = {}
 _event_bus = EventBus()
 _idempotency: dict[str, dict[str, Any]] = {}
@@ -87,6 +119,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _to_media_session(record: BackendSession) -> MediaSession:
+    return MediaSession(
+        session_id=record.session_id,
+        bridge_session_id=record.session_id,
+        call_id=record.call_id,
+        status=record.status,
+        reason=record.reason,
+    )
+
+
 async def _emit_event(event_type: str, record: BackendSession, attributes: dict[str, Any] | None = None) -> None:
     await _event_bus.publish(
         {
@@ -114,7 +156,12 @@ async def create_media_session(request: CreateMediaSessionRequest) -> MediaSessi
 
     session_id = f"media-{uuid.uuid4()}"
     requested_runtime = request.metadata.get("bridge_runtime")
-    backend = backend_router.choose_backend(request.call_id, requested_runtime=requested_runtime)
+
+    try:
+        backend = backend_router.choose_backend(requested_runtime=requested_runtime, model_name=request.ai_profile.model_name)
+    except RuntimeConfigurationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     record = backend.create(request, session_id=session_id)
     _sessions[session_id] = record
 
@@ -132,7 +179,7 @@ async def create_media_session(request: CreateMediaSessionRequest) -> MediaSessi
             "remote_rtp": f"{request.rtp.remote_address}:{request.rtp.remote_port}",
         },
     )
-    return MediaSession(session_id=record.session_id, bridge_session_id=record.session_id, call_id=record.call_id, status=record.status)
+    return _to_media_session(record)
 
 
 @app.post("/v1/media/sessions/{session_id}/start", response_model=MediaSession)
@@ -145,24 +192,96 @@ async def start_media_session(session_id: str, idempotency_key: str = Header(...
     if not record:
         raise HTTPException(status_code=404, detail="media session not found")
 
-    if record.status not in {"active", "terminated"}:
-        backend = backend_router.choose_backend(record.call_id, requested_runtime=record.runtime)
+    if record.status == "terminated":
+        response = _to_media_session(record)
+        _idempotency[key] = response.model_dump()
+        return response
+
+    if record.status != "active":
+        backend = backend_router.choose_backend(requested_runtime=record.runtime, model_name=record.request.ai_profile.model_name)
         backend.start(record)
-        first_audio_latency = max(0.0, time.time() - record.created_at.timestamp())
-        record.first_audio_at = time.time()
-        FIRST_AUDIO_LATENCY_SECONDS.labels(runtime=record.runtime).observe(first_audio_latency)
-        await _emit_event("media.first_audio", record, {"first_audio_latency_ms": round(first_audio_latency * 1000, 2)})
         await _emit_event("media.session.active", record)
 
-    response = MediaSession(
-        session_id=record.session_id,
-        bridge_session_id=record.session_id,
-        call_id=record.call_id,
-        status=record.status,
-        reason=record.reason,
-    )
+    response = _to_media_session(record)
     _idempotency[key] = response.model_dump()
     return response
+
+
+@app.post("/v1/media/sessions/{session_id}/fixtures/run", response_model=FixtureRunResponse)
+async def run_media_fixture(session_id: str, body: RunFixtureRequest) -> FixtureRunResponse:
+    record = _sessions.get(session_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="media session not found")
+
+    if record.status == "terminated":
+        raise HTTPException(status_code=409, detail="media session is terminated")
+
+    if record.status != "active":
+        backend = backend_router.choose_backend(requested_runtime=record.runtime, model_name=record.request.ai_profile.model_name)
+        backend.start(record)
+        await _emit_event("media.session.active", record)
+
+    backend = backend_router.choose_backend(requested_runtime=record.runtime, model_name=record.request.ai_profile.model_name)
+
+    try:
+        summary = await backend.run_fixture(
+            session=record,
+            fixture_path=body.fixture_path,
+            output_wav_path=body.output_wav_path,
+            timeout_seconds=body.timeout_seconds,
+            include_greeting=body.include_greeting,
+        )
+    except RuntimeConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        CALL_COMPLETION_TOTAL.labels(result="failed", reason="fixture_timeout", runtime=record.runtime).inc()
+        WS_ERROR_TOTAL.labels(runtime=record.runtime).inc()
+        await _emit_event("media.fixture.failed", record, {"reason": "timeout", "message": str(exc)})
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        CALL_COMPLETION_TOTAL.labels(result="failed", reason="fixture_runtime_error", runtime=record.runtime).inc()
+        WS_ERROR_TOTAL.labels(runtime=record.runtime).inc()
+        await _emit_event("media.fixture.failed", record, {"reason": "runtime_error", "message": str(exc)})
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if record.first_audio_at is None and summary.first_audio_latency_ms is not None:
+        record.first_audio_at = time.time()
+        FIRST_AUDIO_LATENCY_SECONDS.labels(runtime=record.runtime).observe(summary.first_audio_latency_ms / 1000.0)
+        await _emit_event("media.first_audio", record, {"first_audio_latency_ms": summary.first_audio_latency_ms})
+
+    await _emit_event(
+        "media.telemetry",
+        record,
+        {
+            "first_audio_latency_ms": summary.first_audio_latency_ms,
+            "fixture_input_duration_ms": summary.input_duration_ms,
+            "fixture_output_duration_ms": summary.output_duration_ms,
+        },
+    )
+    await _emit_event(
+        "media.fixture.completed",
+        record,
+        _fixture_summary_attributes(summary),
+    )
+
+    return FixtureRunResponse(
+        session_id=record.session_id,
+        call_id=record.call_id,
+        runtime=record.runtime,
+        fixture_path=summary.fixture_path,
+        output_wav_path=summary.output_wav_path,
+        output_sample_rate_hz=summary.output_sample_rate_hz,
+        input_duration_ms=summary.input_duration_ms,
+        output_duration_ms=summary.output_duration_ms,
+        first_audio_latency_ms=summary.first_audio_latency_ms,
+        input_transcript=summary.input_transcript,
+        output_transcript=summary.output_transcript,
+        vendor_session_id=summary.vendor_session_id,
+    )
 
 
 @app.post("/v1/media/sessions/{session_id}/stop", response_model=MediaSession)
@@ -179,17 +298,11 @@ async def stop_media_session(
     if not record:
         raise HTTPException(status_code=404, detail="media session not found")
 
-    backend = backend_router.choose_backend(record.call_id, requested_runtime=record.runtime)
+    backend = backend_router.choose_backend(requested_runtime=record.runtime, model_name=record.request.ai_profile.model_name)
     backend.stop(record, reason=body.reason)
     await _emit_event("media.session.ended", record, {"reason": body.reason})
     CALL_COMPLETION_TOTAL.labels(result="ended", reason=body.reason, runtime=record.runtime).inc()
-    response = MediaSession(
-        session_id=record.session_id,
-        bridge_session_id=record.session_id,
-        call_id=record.call_id,
-        status=record.status,
-        reason=record.reason,
-    )
+    response = _to_media_session(record)
     _idempotency[key] = response.model_dump()
     return response
 
@@ -199,13 +312,7 @@ async def get_media_session(session_id: str) -> MediaSession:
     record = _sessions.get(session_id)
     if not record:
         raise HTTPException(status_code=404, detail="media session not found")
-    return MediaSession(
-        session_id=record.session_id,
-        bridge_session_id=record.session_id,
-        call_id=record.call_id,
-        status=record.status,
-        reason=record.reason,
-    )
+    return _to_media_session(record)
 
 
 @app.post("/v1/media/sessions/{session_id}/telemetry")
@@ -267,10 +374,24 @@ async def stream_media_events(
 
 
 @app.get("/healthz")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "media-bridge"}
+async def health() -> dict[str, Any]:
+    return {"status": "ok", "service": "media-bridge", "runtimes": backend_router.available_runtimes()}
 
 
 @app.get("/metrics")
 async def metrics() -> PlainTextResponse:
     return PlainTextResponse(generate_latest().decode("utf-8"), media_type=CONTENT_TYPE_LATEST)
+
+
+def _fixture_summary_attributes(summary: FixtureRunSummary) -> dict[str, Any]:
+    return {
+        "fixture_path": summary.fixture_path,
+        "output_wav_path": summary.output_wav_path,
+        "output_sample_rate_hz": summary.output_sample_rate_hz,
+        "input_duration_ms": summary.input_duration_ms,
+        "output_duration_ms": summary.output_duration_ms,
+        "first_audio_latency_ms": summary.first_audio_latency_ms,
+        "vendor_session_id": summary.vendor_session_id,
+        "input_transcript": summary.input_transcript,
+        "output_transcript": summary.output_transcript,
+    }

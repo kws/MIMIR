@@ -11,6 +11,7 @@ services:
       context: ./media-bridge
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     ports:
       - "8081:8081"
 
@@ -24,7 +25,7 @@ services:
       MAX_ACTIVE_CALLS_PER_ADAPTER: 20
       AI_PROFILE_CONFIG_PATH: /etc/mimir/ai-profiles.json
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      SCIENTIST_MODEL_NAME: ${SCIENTIST_MODEL_NAME:-gpt-4o-realtime-preview-2024-12-17}
+      SCIENTIST_MODEL_NAME: ${SCIENTIST_MODEL_NAME:-gpt-realtime-mini}
     volumes:
       - ./config/ai-profiles.json:/etc/mimir/ai-profiles.json:ro
     depends_on:

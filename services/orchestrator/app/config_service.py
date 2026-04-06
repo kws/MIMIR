@@ -68,7 +68,7 @@ class AIProfileConfigService:
 
     @staticmethod
     def _default_model_name() -> str:
-        return os.getenv("SCIENTIST_MODEL_NAME", "gpt-4o-realtime-preview-2024-12-17")
+        return os.getenv("SCIENTIST_MODEL_NAME", "gpt-realtime-mini")
 
     def resolve(self, called_extension: str, callee: str) -> AIProfile:
         for key in (

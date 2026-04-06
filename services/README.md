@@ -31,7 +31,12 @@ cp .env.example .env
 
 Required: `OPENAI_API_KEY`.
 
-Optional: `SCIENTIST_MODEL_NAME` to switch the default persona model without editing JSON.
+Optional:
+
+- `GEMINI_API_KEY` for Gemini Live fixture verification
+- `SCIENTIST_MODEL_NAME` to switch the default persona model without editing JSON
+
+The default OpenAI model is `gpt-realtime-mini`.
 
 ### 2) Start the current stack
 
@@ -58,6 +63,7 @@ docker compose up --build
 
 - `POST /v1/media/sessions`
 - `POST /v1/media/sessions/{session_id}/start`
+- `POST /v1/media/sessions/{session_id}/fixtures/run`
 - `POST /v1/media/sessions/{session_id}/stop`
 - `GET /v1/media/sessions/{session_id}`
 - `POST /v1/media/sessions/{session_id}/telemetry`
@@ -83,10 +89,10 @@ The current Python stack does not yet include:
 - a SIP registration stack
 - an Asterisk adapter
 - a Twilio adapter
-- live RTP or OpenAI Realtime media plumbing
+- live RTP call bridging
 - NAT traversal logic at the edge layer
 
-Those concerns are expected to arrive as adapter and media-runtime work, not as hidden behavior inside the orchestrator.
+The bridge does support fixture-based runtime verification against OpenAI Realtime and Gemini Live. Those remaining concerns are expected to arrive as adapter and RTP/media-edge work, not as hidden behavior inside the orchestrator.
 
 ## PBX fixture
 
