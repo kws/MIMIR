@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package mimir.media.v1;
+
+import "google/protobuf/timestamp.proto";
+
+message Empty {}
+
+message SipParticipant {
+  string caller = 1;
+  string callee = 2;
+  string called_extension = 3;
+}
+
+message MediaSessionConfig {
+  string model = 1;
+  string voice = 2;
+  string instructions = 3;
+  string greeting = 4;
+  string input_codec = 5;
+  string output_codec = 6;
+  int32 sample_rate_hz = 7;
+}
+
+message RtpFlow {
+  string local_address = 1;
+  int32 local_port = 2;
+  string remote_address = 3;
+  int32 remote_port = 4;
+}
+
+message CreateMediaSessionRequest {
+  string call_id = 1;
+  SipParticipant participant = 2;
+  MediaSessionConfig config = 3;
+  RtpFlow rtp = 4;
+  map<string, string> metadata = 5;
+}
+
+message CreateMediaSessionResponse {
+  string media_session_id = 1;
+  string status = 2;
+}
+
+message StartMediaSessionRequest {
+  string media_session_id = 1;
+}
+
+message StopMediaSessionRequest {
+  string media_session_id = 1;
+  string reason = 2;
+}
+
+message MediaSessionStatus {
+  string media_session_id = 1;
+  string call_id = 2;
+  string status = 3;
+  string reason = 4;
+}
+
+message MediaEvent {
+  string event_id = 1;
+  string event_type = 2;
+  string media_session_id = 3;
+  string call_id = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+  map<string, string> attributes = 6;
+}
+
+message EventSubscription {
+  repeated string media_session_id = 1;
+}
+
+service MediaControlService {
+  rpc CreateMediaSession(CreateMediaSessionRequest) returns (CreateMediaSessionResponse);
+  rpc StartMediaSession(StartMediaSessionRequest) returns (MediaSessionStatus);
+  rpc StopMediaSession(StopMediaSessionRequest) returns (MediaSessionStatus);
+  rpc GetMediaSession(MediaSessionStatus) returns (MediaSessionStatus);
+  rpc StreamEvents(EventSubscription) returns (stream MediaEvent);
+}
