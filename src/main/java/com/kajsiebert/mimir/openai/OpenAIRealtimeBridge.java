@@ -1,5 +1,6 @@
 package com.kajsiebert.mimir.openai;
 
+import java.util.UUID;
 import java.util.function.Consumer;
 
 import org.mjsip.media.FlowSpec;
@@ -23,6 +24,7 @@ public class OpenAIRealtimeBridge implements MediaStreamer {
   private static final long SEND_WS_AUDIO_INTERVAL_MS = 250;
   private final Vertx vertx;
   private final WebsocketSession websocketSession;
+  private final String bridgeSessionId = "bridge-" + UUID.randomUUID();
   private final ConsumerArray<WebsocketSessionState> audioReceivedCallbacks = new ConsumerArray<>();
   private final ConsumerArray<WebsocketSessionState> callEndedCallbacks = new ConsumerArray<>();
 
@@ -44,11 +46,18 @@ public class OpenAIRealtimeBridge implements MediaStreamer {
 
   public void setFlowSpec(FlowSpec flowSpec) {
     this.flowSpec = flowSpec;
+    LOG.info(
+        "structured={{\"event\":\"flow_spec_set\",\"component\":\"controller\",\"call_id\":\"{}\",\"bridge_session_id\":\"{}\"}}",
+        flowSpec,
+        bridgeSessionId);
   }
 
   @Override
   public boolean start() {
-    LOG.debug("Starting OpenAIRealtimeBridge");
+    LOG.info(
+        "structured={{\"event\":\"bridge_starting\",\"component\":\"controller\",\"call_id\":\"{}\",\"bridge_session_id\":\"{}\"}}",
+        flowSpec,
+        bridgeSessionId);
     if (flowSpec == null) {
       return false;
     }
@@ -81,14 +90,20 @@ public class OpenAIRealtimeBridge implements MediaStreamer {
               }
             });
 
-    LOG.debug("OpenAIRealtimeBridge started");
+    LOG.info(
+        "structured={{\"event\":\"bridge_started\",\"component\":\"controller\",\"call_id\":\"{}\",\"bridge_session_id\":\"{}\"}}",
+        flowSpec,
+        bridgeSessionId);
 
     return true;
   }
 
   @Override
   public boolean halt() {
-    LOG.debug("Halting OpenAIRealtimeBridge");
+    LOG.info(
+        "structured={{\"event\":\"bridge_halting\",\"component\":\"controller\",\"call_id\":\"{}\",\"bridge_session_id\":\"{}\"}}",
+        flowSpec,
+        bridgeSessionId);
     websocketSession.close();
 
     if (rtpSession != null) {
@@ -104,8 +119,15 @@ public class OpenAIRealtimeBridge implements MediaStreamer {
       audioFlushTimerId = -1;
     }
 
-    LOG.debug("OpenAIRealtimeBridge halted");
+    LOG.info(
+        "structured={{\"event\":\"bridge_halted\",\"component\":\"controller\",\"call_id\":\"{}\",\"bridge_session_id\":\"{}\"}}",
+        flowSpec,
+        bridgeSessionId);
     return true;
+  }
+
+  public String getBridgeSessionId() {
+    return bridgeSessionId;
   }
 
   public void onAudioReceived(Consumer<WebsocketSessionState> callback) {

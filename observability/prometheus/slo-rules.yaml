@@ -1,0 +1,59 @@
+groups:
+  - name: mimir-runtime-slo
+    interval: 30s
+    rules:
+      - record: slo:invite_to_answer_latency_p95_seconds
+        expr: histogram_quantile(0.95, sum(rate(sip_invite_to_answer_latency_seconds_bucket[5m])) by (le))
+
+      - record: slo:first_audio_latency_p95_seconds_by_runtime
+        expr: histogram_quantile(0.95, sum(rate(media_bridge_first_audio_latency_seconds_bucket[5m])) by (runtime, le))
+
+      - record: slo:rtp_jitter_p95_ms_by_runtime
+        expr: histogram_quantile(0.95, sum(rate(media_bridge_rtp_jitter_ms_bucket[5m])) by (runtime, le))
+
+      - record: slo:rtp_packet_loss_p95_pct_by_runtime
+        expr: histogram_quantile(0.95, sum(rate(media_bridge_rtp_packet_loss_pct_bucket[5m])) by (runtime, le))
+
+      - record: slo:websocket_error_rate_by_runtime
+        expr: sum(rate(media_bridge_websocket_error_total[5m])) by (runtime)
+
+      - record: slo:websocket_reconnect_rate_by_runtime
+        expr: sum(rate(media_bridge_websocket_reconnect_total[5m])) by (runtime)
+
+      - record: slo:call_failure_rate_by_runtime
+        expr: |
+          sum(rate(media_bridge_call_completion_total{result="failed"}[5m])) by (runtime)
+          /
+          clamp_min(sum(rate(media_bridge_call_completion_total[5m])) by (runtime), 0.001)
+
+      - alert: MimirInviteToAnswerLatencySLOBreached
+        expr: slo:invite_to_answer_latency_p95_seconds > 3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "INVITE→answer latency p95 is above 3 seconds"
+
+      - alert: MimirFirstAudioLatencySLOBreached
+        expr: slo:first_audio_latency_p95_seconds_by_runtime > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "First-audio latency p95 is above 5 seconds"
+
+      - alert: MimirRtpQualitySLOBreached
+        expr: slo:rtp_jitter_p95_ms_by_runtime > 30 or slo:rtp_packet_loss_p95_pct_by_runtime > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RTP jitter/loss SLO is breached"
+
+      - alert: MimirWebsocketHealthSLOBreached
+        expr: slo:websocket_error_rate_by_runtime > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Websocket error rate is elevated"
