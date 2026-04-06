@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+import httpx
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -80,9 +82,15 @@ class EventBus:
             await queue.put(event)
 
 
-app = FastAPI(title="MIMIR Media Bridge", version="1.0.0")
+app = FastAPI(title="MIMIR Media Bridge", version="1.1.0")
 _sessions: dict[str, SessionRecord] = {}
 _event_bus = EventBus()
+_idempotency: dict[str, dict[str, Any]] = {}
+_observed_call_ids: set[str] = set()
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 async def _emit_event(event_type: str, record: SessionRecord, attributes: dict[str, Any] | None = None) -> None:
@@ -92,10 +100,29 @@ async def _emit_event(event_type: str, record: SessionRecord, attributes: dict[s
             "event_type": event_type,
             "media_session_id": record.session_id,
             "call_id": record.call_id,
-            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "occurred_at": _now(),
             "attributes": attributes or {},
         }
     )
+
+
+async def _consume_sip_call_events() -> None:
+    sip_url = os.getenv("SIP_FLOW_HANDLER_URL")
+    if not sip_url:
+        return
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream("GET", f"{sip_url.rstrip('/')}/v1/call-events") as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    payload = json.loads(line.replace("data: ", "", 1))
+                    if payload.get("call_id"):
+                        _observed_call_ids.add(payload["call_id"])
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    asyncio.create_task(_consume_sip_call_events())
 
 
 @app.post("/v1/media/sessions", response_model=MediaSession, status_code=201)
@@ -104,7 +131,7 @@ async def create_media_session(request: CreateMediaSessionRequest) -> MediaSessi
     record = SessionRecord(session_id=session_id, call_id=request.call_id, status="created")
     _sessions[session_id] = record
     await _emit_event(
-        "media.session.created",
+        "call.media_ready",
         record,
         {
             "called_extension": request.participant.called_extension,
@@ -118,38 +145,43 @@ async def create_media_session(request: CreateMediaSessionRequest) -> MediaSessi
 
 
 @app.post("/v1/media/sessions/{session_id}/start", response_model=MediaSession)
-async def start_media_session(session_id: str) -> MediaSession:
+async def start_media_session(session_id: str, idempotency_key: str = Header(..., alias="Idempotency-Key")) -> MediaSession:
+    key = f"attach_media:{session_id}:{idempotency_key}"
+    if key in _idempotency:
+        return MediaSession(**_idempotency[key])
+
     record = _sessions.get(session_id)
     if not record:
         raise HTTPException(status_code=404, detail="media session not found")
-    if record.status in {"active", "terminated"}:
-        return MediaSession(
-            session_id=record.session_id,
-            call_id=record.call_id,
-            status=record.status,
-            reason=record.reason,
-        )
+    if record.status not in {"active", "terminated"}:
+        record.status = "active"
+        await _emit_event("call.answered", record)
+        await _emit_event("call.active", record)
 
-    record.status = "active"
-    await _emit_event("media.session.active", record)
-    await _emit_event("media.audio.first_packet", record, {"direction": "ai_to_rtp"})
-    return MediaSession(session_id=record.session_id, call_id=record.call_id, status=record.status)
+    response = MediaSession(session_id=record.session_id, call_id=record.call_id, status=record.status, reason=record.reason)
+    _idempotency[key] = response.model_dump()
+    return response
 
 
 @app.post("/v1/media/sessions/{session_id}/stop", response_model=MediaSession)
-async def stop_media_session(session_id: str, body: StopMediaSessionRequest) -> MediaSession:
+async def stop_media_session(
+    session_id: str,
+    body: StopMediaSessionRequest,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+) -> MediaSession:
+    key = f"terminate_media:{session_id}:{idempotency_key}"
+    if key in _idempotency:
+        return MediaSession(**_idempotency[key])
+
     record = _sessions.get(session_id)
     if not record:
         raise HTTPException(status_code=404, detail="media session not found")
     record.status = "terminated"
     record.reason = body.reason
-    await _emit_event("media.session.terminated", record, {"reason": body.reason})
-    return MediaSession(
-        session_id=record.session_id,
-        call_id=record.call_id,
-        status=record.status,
-        reason=record.reason,
-    )
+    await _emit_event("call.ended", record, {"reason": body.reason})
+    response = MediaSession(session_id=record.session_id, call_id=record.call_id, status=record.status, reason=record.reason)
+    _idempotency[key] = response.model_dump()
+    return response
 
 
 @app.get("/v1/media/sessions/{session_id}", response_model=MediaSession)
@@ -163,6 +195,24 @@ async def get_media_session(session_id: str) -> MediaSession:
         status=record.status,
         reason=record.reason,
     )
+
+
+@app.get("/v1/call-events")
+async def stream_call_events(call_id: str | None = Query(default=None, description="Optional call_id filter")) -> StreamingResponse:
+    queue = _event_bus.subscribe()
+
+    async def event_generator():
+        try:
+            while True:
+                event = await queue.get()
+                if call_id and event["call_id"] != call_id:
+                    continue
+                yield f"event: {event['event_type']}\n"
+                yield f"data: {json.dumps(event)}\n\n"
+        finally:
+            _event_bus.unsubscribe(queue)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.get("/v1/media/events")
@@ -186,4 +236,4 @@ async def stream_media_events(session_id: str | None = Query(default=None, descr
 
 @app.get("/healthz")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "media-bridge"}
+    return {"status": "ok", "service": "media-bridge", "observed_calls": str(len(_observed_call_ids))}
