@@ -21,6 +21,41 @@ This directory introduces a strict split between SIP control and media runtime f
 
 No in-process object references are permitted between SIP flow logic and media runtime logic; only remote API calls/events.
 
+## Ownership and Failure Arbitration Rules
+
+### Termination ownership boundaries
+
+- **SIP Flow Handler owns SIP dialog termination**:
+  - Sends final SIP response (`4xx/5xx`) if a call fails before answer.
+  - Sends `BYE` (or equivalent finalization) for established dialogs when controller declares failure/timeout.
+  - Owns final `CallEnded` projection state publication for signaling-side lifecycle.
+- **Media Bridge owns media socket/websocket cleanup**:
+  - Closes RTP sockets, websocket sessions, and media workers.
+  - Releases media allocation and emits cleanup completion/failure event.
+  - Must perform idempotent cleanup even if SIP side has already terminated.
+- **Controller arbitrates timeout and failure transitions**:
+  - Evaluates timer expirations and asynchronous failure events from either side.
+  - Selects terminal state and required compensating actions.
+  - Prevents split-brain by issuing a single terminal decision for each `call_id`.
+
+### Timeout matrix (explicit timers and compensating actions)
+
+| Timer | Starts at | Expiry terminal state | Required compensating action |
+|---|---|---|---|
+| **Media allocation timeout** | INVITE accepted by controller and media allocation requested from Media Bridge | `FAILED_MEDIA_ALLOCATION_TIMEOUT` | Controller commands Media Bridge `release(call_id)`; SIP Flow Handler sends pre-answer failure response (`503 Service Unavailable` equivalent); publish hangup reason `MEDIA_ALLOCATION_TIMEOUT`. |
+| **First-audio timeout** | Media Bridge reports session allocated/connected and call is answered | `FAILED_FIRST_AUDIO_TIMEOUT` | Controller commands Media Bridge cleanup; SIP Flow Handler terminates dialog (`BYE` if answered, otherwise `408 Request Timeout` equivalent); propagate hangup reason `FIRST_AUDIO_TIMEOUT` to SIP CDR and event stream. |
+| **Idle/no-media timeout** | First audio observed (bi-directional media phase) and idle watchdog armed | `ENDED_IDLE_TIMEOUT` | Controller commands normal teardown; SIP Flow Handler issues `BYE` with normal-call-clear fallback semantics; Media Bridge closes RTP/websocket and marks reason `IDLE_NO_MEDIA_TIMEOUT`. |
+| **Graceful shutdown timeout** | Shutdown initiated after terminal decision; waiting for SIP + media confirmation | `ENDED_FORCED_SHUTDOWN` | Controller force-closes remaining resources; SIP Flow Handler force-terminates outstanding dialog leg(s); Media Bridge force-closes sockets/websocket; record hangup reason `GRACEFUL_SHUTDOWN_TIMEOUT` and audit forced cleanup. |
+
+### Compensation invariants
+
+- Every timeout transition must:
+  1. Emit a single terminal event with `call_id`, `terminal_state`, and `hangup_reason`.
+  2. Trigger both signaling-side and media-side teardown paths (order may vary, both required).
+  3. Be safe under retries (idempotent `release/terminate` calls).
+- If SIP and media outcomes differ (e.g., SIP already ended but media still alive), controller must treat call as non-terminal until both cleanup confirmations are observed or graceful-shutdown timeout forces closure.
+- If any compensating action fails, controller records failure cause and escalates to forced shutdown path.
+
 ## Inbound-Only Policy
 
 - Only inbound INVITE paths are supported.
