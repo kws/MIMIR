@@ -22,6 +22,7 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
             voice=args.voice,
             instructions=args.instructions,
             greeting=args.greeting,
+            initialisation=args.initialisation,
             vad_mode=args.vad_mode,
         ),
         media_settings=MediaSettings(input_codec="pcm16", output_codec="pcm16", sample_rate_hz=16_000),
@@ -66,6 +67,7 @@ def main() -> None:
     parser.add_argument("--voice", required=True)
     parser.add_argument("--instructions", required=True)
     parser.add_argument("--greeting", default="Hello from MIMIR.")
+    parser.add_argument("--initialisation")
     parser.add_argument("--vad-mode", default="manual")
     parser.add_argument("--fixture")
     parser.add_argument("--output", required=True)

@@ -213,6 +213,7 @@ class RuntimeMediaBackend:
             voice=session.request.ai_profile.voice,
             instructions=session.request.ai_profile.instructions,
             greeting=session.request.ai_profile.greeting,
+            initialisation=session.request.ai_profile.initialisation,
             vad_mode=vad_mode or session.request.ai_profile.vad_mode,
             include_greeting=include_greeting,
         )

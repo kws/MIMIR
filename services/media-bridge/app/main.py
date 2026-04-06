@@ -40,7 +40,7 @@ class RunFixtureRequest(BaseModel):
     timeout_seconds: float = Field(default=45.0, ge=1.0, le=300.0)
     include_greeting: bool = Field(
         default=False,
-        description="When true, the bridge asks the model to speak its configured greeting before handling the fixture audio.",
+        description="When true, the bridge asks the model to perform its configured opening turn before handling the fixture audio.",
     )
 
 
@@ -76,7 +76,7 @@ class EventBus:
             await queue.put(event)
 
 
-app = FastAPI(title="MIMIR Media Bridge", version="2.2.0")
+app = FastAPI(title="MIMIR Media Bridge", version="2.3.0")
 _sessions: dict[str, BackendSession] = {}
 _event_bus = EventBus()
 _idempotency: dict[str, dict[str, Any]] = {}

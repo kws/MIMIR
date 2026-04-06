@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: MIMIR Media Bridge Control API
-  version: 2.2.0
+  version: 2.3.0
   description: |
     Versioned HTTP contract between the orchestrator and the media bridge.
     This contract documents the provider-agnostic media API implemented in this repository today.
@@ -195,6 +195,10 @@ components:
           type: string
         greeting:
           type: string
+          description: Literal greeting text associated with the persona.
+        initialisation:
+          type: string
+          description: Optional legacy-style first-turn prompt used when the model answers the phone before caller audio arrives.
         vad_mode:
           type: string
     MediaSettings:

@@ -79,6 +79,7 @@ async def test_media_session_create_start_and_stop_exposes_resolved_rtp(monkeypa
                         "voice": "verse",
                         "instructions": "Be helpful.",
                         "greeting": "Hello from the bridge.",
+                        "initialisation": "Ring, ring. The phone is ringing. You pick it up and say: 'Hello from the bridge.'",
                         "vad_mode": "server_vad",
                     },
                     "media_settings": {"input_codec": "g711_ulaw", "output_codec": "g711_ulaw", "sample_rate_hz": 8000},

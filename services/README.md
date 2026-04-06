@@ -102,8 +102,12 @@ Behavior notes:
 Default profile mappings are preloaded from:
 
 - `services/config/ai-profiles.json`
+- `services/config/personas/`
 
 This keeps persona configuration in the orchestrator layer instead of tying it to any specific telephony provider.
+
+Profile entries in `ai-profiles.json` may point at rich persona assets with `persona_path`. Paths are resolved relative to the config file, so the compose stack mounts the whole `services/config/` directory into the orchestrator container.
+Each persona file uses simple `key: value` front matter, followed by a `---` separator and the full instruction body. The front matter can carry both a literal `greeting` and a legacy-style `initialisation` prompt for the model's forced phone-answer turn.
 
 ## Contracts
 

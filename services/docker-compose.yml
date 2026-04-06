@@ -33,7 +33,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       SCIENTIST_MODEL_NAME: ${SCIENTIST_MODEL_NAME:-gpt-realtime-mini}
     volumes:
-      - ./config/ai-profiles.json:/etc/mimir/ai-profiles.json:ro
+      - ./config:/etc/mimir:ro
     depends_on:
       - pbx-fixture
       - media-bridge

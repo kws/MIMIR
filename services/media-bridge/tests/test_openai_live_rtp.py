@@ -40,6 +40,7 @@ async def test_openai_runtime_can_emit_greeting_over_live_rtp() -> None:
                 voice="verse",
                 instructions="You are a concise phone assistant.",
                 greeting="Hello from the live RTP test.",
+                initialisation="Ring, ring. The phone is ringing. You pick it up and say: 'Hello from the live RTP test.'",
                 vad_mode="server_vad",
             ),
             media_settings=MediaSettings(input_codec="g711_ulaw", output_codec="g711_ulaw", sample_rate_hz=8000),

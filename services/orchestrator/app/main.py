@@ -360,7 +360,7 @@ async def create_inbound_call(request: InboundCallRequest, idempotency_key: str 
             "call_id": request.call_id,
             "direction": "inbound",
             "participant": request.participant.model_dump(),
-            "ai_profile": resolved_profile.model_dump(),
+            "ai_profile": resolved_profile.model_dump(exclude_none=True),
             "media_settings": {"input_codec": "g711_ulaw", "output_codec": "g711_ulaw", "sample_rate_hz": 8000},
             "rtp": request.rtp.model_dump(),
             "metadata": {"adapter_name": adapter_name, **request.metadata},

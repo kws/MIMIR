@@ -40,6 +40,7 @@ class MediaSessionConfig(BaseModel):
     voice: str
     instructions: str
     greeting: str
+    initialisation: str | None = None
     vad_mode: str
 
 

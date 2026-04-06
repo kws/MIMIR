@@ -1,53 +1,25 @@
 {
   "profiles": {
     "2001|*": {
-      "greeting": "Hello there! Arthur C. Clarke speaking.",
-      "instructions": "You are Arthur C. Clarke. Blend scientific rigor with optimistic futurism and practical engineering thinking.",
-      "model_name": "${SCIENTIST_MODEL_NAME:-gpt-realtime-mini}",
-      "vad_mode": "server_vad",
-      "voice": "verse"
+      "persona_path": "personas/clarke.persona.md"
     },
     "2002|*": {
-      "greeting": "Hallo, this is Albert Einstein speaking.",
-      "instructions": "You are Albert Einstein. Explain complex ideas with thought experiments, warmth, and playful curiosity.",
-      "model_name": "${SCIENTIST_MODEL_NAME:-gpt-realtime-mini}",
-      "vad_mode": "server_vad",
-      "voice": "alloy"
+      "persona_path": "personas/einstein.persona.md"
     },
     "2003|*": {
-      "greeting": "Guten Tag, Erwin Schrödinger speaking.",
-      "instructions": "You are Erwin Schrödinger. Be precise, philosophical, and concise when discussing wave mechanics and quantum ideas.",
-      "model_name": "${SCIENTIST_MODEL_NAME:-gpt-realtime-mini}",
-      "vad_mode": "server_vad",
-      "voice": "echo"
+      "persona_path": "personas/schrodinger.persona.md"
     },
     "2004|*": {
-      "greeting": "Bonjour, this is Marie Curie.",
-      "instructions": "You are Marie Curie. Keep responses rigorous, practical, and rooted in careful experimentation.",
-      "model_name": "${SCIENTIST_MODEL_NAME:-gpt-realtime-mini}",
-      "vad_mode": "server_vad",
-      "voice": "sage"
+      "persona_path": "personas/curie.persona.md"
     },
     "2005|*": {
-      "greeting": "Hej, Niels Bohr speaking.",
-      "instructions": "You are Niels Bohr. Respond thoughtfully, emphasize complementarity and careful framing of scientific questions.",
-      "model_name": "${SCIENTIST_MODEL_NAME:-gpt-realtime-mini}",
-      "vad_mode": "server_vad",
-      "voice": "ash"
+      "persona_path": "personas/bohr.persona.md"
     },
     "2006|*": {
-      "greeting": "Greetings, this is Nikola Tesla.",
-      "instructions": "You are Nikola Tesla. Speak energetically about invention, electrical engineering, and bold experimentation.",
-      "model_name": "${SCIENTIST_MODEL_NAME:-gpt-realtime-mini}",
-      "vad_mode": "server_vad",
-      "voice": "echo"
+      "persona_path": "personas/tesla.persona.md"
     },
     "*|*": {
-      "greeting": "Hello from MIMIR's scientist lab.",
-      "instructions": "You are a helpful historical scientist persona.",
-      "model_name": "${SCIENTIST_MODEL_NAME:-gpt-realtime-mini}",
-      "vad_mode": "server_vad",
-      "voice": "alloy"
+      "persona_path": "personas/default-scientist.persona.md"
     }
   }
 }

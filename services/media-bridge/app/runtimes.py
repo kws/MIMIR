@@ -31,7 +31,17 @@ class RuntimeRequest:
     instructions: str
     greeting: str
     vad_mode: str
+    initialisation: str | None = None
     include_greeting: bool = False
+
+
+def build_initial_response_prompt(request: RuntimeRequest) -> str | None:
+    # Preserve the legacy "phone is ringing, now answer it" turn when available.
+    if request.initialisation:
+        return request.initialisation
+    if request.greeting:
+        return f"You are answering an inbound phone call and should speak first. Start by saying this greeting exactly: {request.greeting}"
+    return None
 
 
 @dataclass(slots=True)
@@ -400,8 +410,9 @@ class OpenAIRealtimeRuntime:
 
     def _response_payload(self, request: RuntimeRequest) -> dict[str, Any]:
         payload: dict[str, Any] = {}
-        if request.greeting:
-            payload["instructions"] = request.greeting
+        prompt = build_initial_response_prompt(request)
+        if prompt:
+            payload["instructions"] = prompt
         return payload
 
     async def _append_current_input_audio(self, websocket: Any, audio_input: PcmAudio) -> None:
@@ -477,8 +488,8 @@ class GeminiLiveRuntime:
                     audio=types.Blob(data=audio_input.pcm16, mime_type=f"audio/pcm;rate={self.input_sample_rate_hz}")
                 )
                 await session.send_realtime_input(activity_end=types.ActivityEnd())
-            elif request.include_greeting and request.greeting:
-                await self._send_greeting_turn(session=session, greeting=request.greeting, model_name=model_name)
+            elif request.include_greeting and (request.initialisation or request.greeting):
+                await self._send_greeting_turn(session=session, request=request, model_name=model_name)
             receiver = session.receive()
 
             while True:
@@ -546,8 +557,10 @@ class GeminiLiveRuntime:
             return os.getenv("GEMINI_DEFAULT_VOICE", "Kore")
         return requested_voice
 
-    async def _send_greeting_turn(self, session: Any, greeting: str, model_name: str) -> None:
-        greeting_prompt = self._greeting_turn_text(greeting)
+    async def _send_greeting_turn(self, session: Any, request: RuntimeRequest, model_name: str) -> None:
+        greeting_prompt = build_initial_response_prompt(request)
+        if not greeting_prompt:
+            return
         if model_name.startswith("gemini-2.5"):
             await session.send_client_content(
                 turns={"role": "user", "parts": [{"text": greeting_prompt}]},
@@ -555,9 +568,6 @@ class GeminiLiveRuntime:
             )
             return
         await session.send_realtime_input(text=greeting_prompt)
-
-    def _greeting_turn_text(self, greeting: str) -> str:
-        return f"You are answering an inbound phone call and should speak first. Start by saying this greeting exactly: {greeting}"
 
 
 def _sample_rate_from_mime_type(mime_type: str | None, default_rate_hz: int) -> int:

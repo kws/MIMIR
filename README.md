@@ -16,6 +16,7 @@ The default Python stack currently ships the first two pieces plus a one-click P
 - `services/orchestrator` — FastAPI orchestrator for normalized inbound-call control.
 - `services/media-bridge` — FastAPI media session service.
 - `services/config/ai-profiles.json` — default persona/profile mappings keyed by extension.
+- `services/config/personas/` — rich persona scripts referenced by the profile map.
 - `services/pbx` — Asterisk-based PBX fixture used for local and continuous testing.
 - `contracts/` — published service contracts for the media bridge.
 - `observability/` — Prometheus/Grafana artifacts.

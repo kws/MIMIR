@@ -35,6 +35,7 @@ message AIProfile {
   string greeting = 3;
   string vad_mode = 4;
   string model_name = 5;
+  string initialisation = 6;
 }
 
 message MediaSettings {
