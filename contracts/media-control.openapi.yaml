@@ -2,13 +2,24 @@ openapi: 3.0.3
 info:
   title: MIMIR Media Bridge Control API
   version: 1.0.0
+  description: |
+    Versioned contract between Media Controller and Media Bridge.
+
+    Semantic versioning requirements:
+      - MAJOR: Breaking contract changes (field removals/renames/type changes, required-ness tightening, route deletions, enum value removals).
+      - MINOR: Backward-compatible additions (new optional fields, new routes, additive enum values).
+      - PATCH: Non-contract clarifications only (descriptions/examples/docs).
+
+    Breaking changes are forbidden without a MAJOR version bump so alternate media implementations can be swapped safely.
+  x-contract-stability: semver
+  x-breaking-change-policy: "forbidden-without-major-bump"
 servers:
   - url: http://media-bridge:8081
 paths:
   /v1/media/sessions:
     post:
-      summary: Create media session
-      operationId: createMediaSession
+      summary: Create a media session for a call
+      operationId: CreateMediaSession
       requestBody:
         required: true
         content:
@@ -22,77 +33,62 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MediaSession'
-  /v1/media/sessions/{sessionId}/start:
+  /v1/media/{call_id}/start:
     post:
-      summary: Start media flow
-      operationId: startMediaSession
+      summary: Start media for an existing call
+      operationId: StartMedia
       parameters:
-        - in: path
-          name: sessionId
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/CallId'
       responses:
         '200':
-          description: Started
+          description: Media started
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/MediaSession'
-  /v1/media/sessions/{sessionId}/stop:
+  /v1/media/{call_id}/stop:
     post:
-      summary: Stop media flow
-      operationId: stopMediaSession
+      summary: Stop media for an existing call
+      operationId: StopMedia
       parameters:
-        - in: path
-          name: sessionId
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/CallId'
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                reason:
-                  type: string
+              $ref: '#/components/schemas/StopMediaRequest'
       responses:
         '200':
-          description: Stopped
+          description: Media stopped
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/MediaSession'
-  /v1/media/sessions/{sessionId}:
+  /v1/media/{call_id}/health:
     get:
-      summary: Fetch media session status
-      operationId: getMediaSession
+      summary: Get media health metrics for a call
+      operationId: GetMediaHealth
       parameters:
-        - in: path
-          name: sessionId
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/CallId'
       responses:
         '200':
-          description: Status
+          description: Current health metrics
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MediaSession'
+                $ref: '#/components/schemas/MediaHealth'
   /v1/media/events:
     get:
-      summary: Stream media lifecycle and telemetry events (SSE)
-      operationId: streamEvents
+      summary: Stream Media Bridge lifecycle events to controller (SSE)
+      operationId: StreamMediaEvents
       parameters:
         - in: query
-          name: session_id
+          name: call_id
           required: false
           schema:
             type: string
-          description: Optional comma-separated media session IDs
+          description: Optional filter for one call ID
       responses:
         '200':
           description: Server-sent event stream
@@ -101,73 +97,104 @@ paths:
               schema:
                 type: string
 components:
+  parameters:
+    CallId:
+      in: path
+      name: call_id
+      required: true
+      schema:
+        type: string
+      description: Unique call identifier shared between controller and Media Bridge
   schemas:
-    SipParticipant:
+    Endpoint:
       type: object
-      required: [caller, callee, called_extension]
+      required: [ip, port]
       properties:
-        caller:
+        ip:
           type: string
-        callee:
-          type: string
-        called_extension:
-          type: string
-    RtpFlow:
-      type: object
-      required: [local_address, local_port, remote_address, remote_port]
-      properties:
-        local_address:
-          type: string
-        local_port:
+          example: 10.10.4.18
+        port:
           type: integer
-        remote_address:
-          type: string
-        remote_port:
-          type: integer
-    MediaSessionConfig:
-      type: object
-      required: [model, voice, instructions, greeting, input_codec, output_codec, sample_rate_hz]
-      properties:
-        model:
-          type: string
-        voice:
-          type: string
-        instructions:
-          type: string
-        greeting:
-          type: string
-        input_codec:
-          type: string
-        output_codec:
-          type: string
-        sample_rate_hz:
-          type: integer
+          minimum: 1
+          maximum: 65535
+          example: 22222
     CreateMediaSessionRequest:
       type: object
-      required: [call_id, participant, config, rtp]
+      required: [call_id, codec, local_rtp, remote_rtp, ai_profile]
       properties:
         call_id:
           type: string
-        participant:
-          $ref: '#/components/schemas/SipParticipant'
-        config:
-          $ref: '#/components/schemas/MediaSessionConfig'
-        rtp:
-          $ref: '#/components/schemas/RtpFlow'
-        metadata:
-          type: object
-          additionalProperties:
-            type: string
+        codec:
+          type: string
+          description: Codec name negotiated for RTP media
+          example: PCMU
+        local_rtp:
+          $ref: '#/components/schemas/Endpoint'
+        remote_rtp:
+          $ref: '#/components/schemas/Endpoint'
+        ai_profile:
+          type: string
+          description: Selected AI behavior profile/preset
+          example: support_agent_v1
+    StopMediaRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
     MediaSession:
       type: object
-      required: [session_id, call_id, status]
+      required: [media_session_id, call_id, status]
       properties:
-        session_id:
+        media_session_id:
           type: string
         call_id:
           type: string
         status:
           type: string
-          enum: [created, starting, active, stopping, terminated, failed]
+          enum: [created, starting, active, stopping, ended, failed]
         reason:
           type: string
+    MediaHealth:
+      type: object
+      required: [call_id, jitter_ms, packet_loss_percent, ws_latency_ms]
+      properties:
+        call_id:
+          type: string
+        jitter_ms:
+          type: number
+          format: float
+          minimum: 0
+        packet_loss_percent:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+        ws_latency_ms:
+          type: number
+          format: float
+          minimum: 0
+    MediaBridgeEvent:
+      type: object
+      required: [event_id, topic, call_id, occurred_at]
+      properties:
+        event_id:
+          type: string
+        topic:
+          $ref: '#/components/schemas/MediaEventTopic'
+        call_id:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          additionalProperties: true
+    MediaEventTopic:
+      type: string
+      description: Event topics emitted from Media Bridge back to controller
+      enum:
+        - MEDIA_READY
+        - FIRST_AUDIO_RECEIVED
+        - MEDIA_ERROR
+        - MEDIA_ENDED
