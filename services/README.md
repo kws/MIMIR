@@ -13,6 +13,13 @@ This directory introduces a strict split between SIP control and media runtime f
    - Enforces `direction == inbound` before allocating media sessions.
    - Exposes HTTP control APIs and an SSE event stream. A matching gRPC contract is in `contracts/media-control.proto`.
 
+## Observability baseline (runtime swap evidence)
+
+- SIP Flow Handler and Media Bridge expose `GET /metrics` for Prometheus scraping.
+- Structured logs include `call_id` and `bridge_session_id` (where available) to correlate SIP handler, controller, and media runtime behavior.
+- Media Bridge telemetry ingestion endpoint (`POST /v1/media/sessions/{session_id}/telemetry`) captures RTP loss/jitter and websocket reconnect/error signals with a `runtime` label, enabling Python-vs-alternative evidence collection.
+- Dashboards and SLO recording/alert rules are provided in `/observability`.
+
 ## Explicit Backend Control Interface
 
 - HTTP Control API: `contracts/media-control.openapi.yaml`

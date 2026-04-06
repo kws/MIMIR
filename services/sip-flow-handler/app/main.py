@@ -4,12 +4,15 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import PlainTextResponse
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel, Field
 
 from .config_service import AIProfile, AIProfileConfigService
@@ -89,12 +92,39 @@ datastore = create_datastore()
 event_bus = EventBus()
 logger = logging.getLogger("sip-flow-handler")
 profile_config = AIProfileConfigService(os.getenv("AI_PROFILE_CONFIG_PATH", "/tmp/mimir-ai-profiles.json"))
+INVITE_STARTED_AT: dict[str, float] = {}
 
 ALLOWED_TRUNK_SOURCES = {item.strip() for item in os.getenv("ALLOWED_TRUNK_SOURCES", "").split(",") if item.strip()}
 MAX_ACTIVE_CALLS_PER_SOURCE = int(os.getenv("MAX_ACTIVE_CALLS_PER_SOURCE", "20"))
 TERMINAL_STATES = {CallState.ENDED.value, CallState.FAILED.value}
 OUTBOUND_BLOCKED_ERROR_CODE = "OUTBOUND_ORIGINATION_DISABLED"
 OUTBOUND_BLOCKED_HTTP_STATUS = 403
+
+INVITE_TO_ANSWER_LATENCY_SECONDS = Histogram(
+    "sip_invite_to_answer_latency_seconds",
+    "Latency from INVITE arrival in SIP handler to call answer.",
+    buckets=(0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 20, 30),
+)
+FIRST_AUDIO_LATENCY_SECONDS = Histogram(
+    "sip_first_audio_latency_seconds",
+    "Latency from INVITE arrival in SIP handler to first-audio observation.",
+    buckets=(0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 20, 30),
+)
+WS_RECONNECT_TOTAL = Counter(
+    "sip_websocket_reconnect_total",
+    "Count of websocket reconnect events reported by media bridge.",
+    labelnames=("runtime",),
+)
+WS_ERROR_TOTAL = Counter(
+    "sip_websocket_error_total",
+    "Count of websocket errors reported by media bridge.",
+    labelnames=("runtime",),
+)
+CALL_COMPLETION_TOTAL = Counter(
+    "sip_call_completion_total",
+    "Count of completed and failed calls by reason.",
+    labelnames=("result", "reason"),
+)
 
 
 class AIProfileMappingRequest(BaseModel):
@@ -105,6 +135,15 @@ class AIProfileMappingRequest(BaseModel):
 
 def _audit_log(event: str, details: dict[str, Any]) -> None:
     logger.warning("audit_event=%s details=%s", event, json.dumps(details, sort_keys=True))
+
+
+def _structured_log(event: str, call_id: str | None = None, bridge_session_id: str | None = None, **fields: Any) -> None:
+    payload: dict[str, Any] = {"event": event, "component": "sip-flow-handler", **fields}
+    if call_id:
+        payload["call_id"] = call_id
+    if bridge_session_id:
+        payload["bridge_session_id"] = bridge_session_id
+    logger.info("structured=%s", json.dumps(payload, sort_keys=True))
 
 
 async def _active_calls_for_source(source_id: str) -> int:
@@ -173,11 +212,26 @@ async def _consume_media_call_events() -> None:
         call_id = payload.get("call_id")
         if not call_id:
             continue
+        bridge_session_id = payload.get("bridge_session_id")
+        attributes = payload.get("attributes", {})
+        runtime = attributes.get("runtime", "python")
+        reconnects = int(attributes.get("ws_reconnects", 0))
+        ws_errors = int(attributes.get("ws_errors", 0))
+        if reconnects:
+            WS_RECONNECT_TOTAL.labels(runtime=runtime).inc(reconnects)
+        if ws_errors:
+            WS_ERROR_TOTAL.labels(runtime=runtime).inc(ws_errors)
+        if payload.get("event_type") == "call.first_audio":
+            started_at = INVITE_STARTED_AT.get(call_id)
+            if started_at is not None:
+                FIRST_AUDIO_LATENCY_SECONDS.observe(time.perf_counter() - started_at)
+        _structured_log("media_event_received", call_id=call_id, bridge_session_id=bridge_session_id, event_type=payload.get("event_type"))
         await _publish_event(call_id, payload.get("event_type", "media.unknown"), {"projection": payload.get("attributes", {})})
 
 
 @app.post("/v1/sip/invites")
 async def inbound_invite(invite: InvitePayload, idempotency_key: str = Header(..., alias="Idempotency-Key")) -> dict[str, Any]:
+    INVITE_STARTED_AT[invite.call_id] = time.perf_counter()
     source_id = invite.sip_headers.get("X-Trunk-Source") or invite.sip_headers.get("X-Source")
 
     if invite.direction.lower() != "inbound" or invite.sip_headers.get("X-Originate-Request", "false").lower() == "true":
@@ -243,6 +297,8 @@ async def inbound_invite(invite: InvitePayload, idempotency_key: str = Header(..
     await _publish_event(invite.call_id, "call.policy_checked", {"projection": {"policy_reason": policy_reason}})
     if not accepted:
         await _publish_event(invite.call_id, "call.failed", {"projection": {"reason": policy_reason}})
+        CALL_COMPLETION_TOTAL.labels(result="failed", reason=policy_reason).inc()
+        INVITE_STARTED_AT.pop(invite.call_id, None)
         return {"call_id": invite.call_id, "state": CallState.FAILED.value, "action": "reject", "reason": policy_reason}
 
     await _publish_event(invite.call_id, "call.media_allocating", {})
@@ -262,8 +318,12 @@ async def inbound_invite(invite: InvitePayload, idempotency_key: str = Header(..
     await _publish_event(invite.call_id, "call.media_ready", {"projection": {"media_session_id": media["session_id"]}})
     started = await media_client.attach_media(media["session_id"], idempotency_key=f"attach-{idempotency_key}")
     if started["status"] == "active":
+        started_at = INVITE_STARTED_AT.get(invite.call_id)
+        if started_at is not None:
+            INVITE_TO_ANSWER_LATENCY_SECONDS.observe(time.perf_counter() - started_at)
         await _publish_event(invite.call_id, "call.answered", {})
         await _publish_event(invite.call_id, "call.active", {})
+        _structured_log("call_answered", call_id=invite.call_id, bridge_session_id=media["session_id"])
 
     projection = await datastore.load_call_projection(invite.call_id)
     return {"call_id": invite.call_id, "action": "accept", **(projection or {})}
@@ -285,6 +345,8 @@ async def hangup(call_id: str, hangup: HangupPayload, idempotency_key: str = Hea
         await media_client.terminate_media(session_id, reason=hangup.reason, idempotency_key=f"term-{idempotency_key}")
 
     await _publish_event(call_id, "call.ended", {"projection": {"reason": hangup.reason}})
+    CALL_COMPLETION_TOTAL.labels(result="ended", reason=hangup.reason).inc()
+    INVITE_STARTED_AT.pop(call_id, None)
     projection = await datastore.load_call_projection(call_id)
     return projection or {"call_id": call_id, "state": CallState.ENDED.value}
 
@@ -318,6 +380,11 @@ async def stream_call_events():
 @app.get("/healthz")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "sip-flow-handler"}
+
+
+@app.get("/metrics")
+async def metrics() -> PlainTextResponse:
+    return PlainTextResponse(generate_latest().decode("utf-8"), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.put("/v1/config/ai-profiles")

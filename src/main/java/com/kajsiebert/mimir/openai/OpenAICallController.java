@@ -30,14 +30,22 @@ public class OpenAICallController implements StreamerFactory {
     bridge = new OpenAIRealtimeBridge(vertx, extensionConfig);
     bridge.onAudioReceived(
         state -> {
-          LOG.debug("Audio received. Starting media agent. State: {}", state);
+          LOG.info(
+              "structured={{\"event\":\"first_audio_received\",\"component\":\"controller\",\"call_id\":\"{}\",\"bridge_session_id\":\"{}\",\"state\":\"{}\"}}",
+              "unknown",
+              bridge.getBridgeSessionId(),
+              state);
           MediaAgent mediaAgent = new MediaAgent(mediaOptions.getMediaDescs(), this);
           ua.accept(mediaAgent);
           callHandledFuture.complete(null);
         });
     bridge.onCallEnded(
         state -> {
-          LOG.debug("Call ended. State: {}", state);
+          LOG.info(
+              "structured={{\"event\":\"call_ended\",\"component\":\"controller\",\"call_id\":\"{}\",\"bridge_session_id\":\"{}\",\"state\":\"{}\"}}",
+              "unknown",
+              bridge.getBridgeSessionId(),
+              state);
           ua.hangup();
           callHandledFuture.complete(null);
         });
