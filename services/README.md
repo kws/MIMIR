@@ -8,6 +8,27 @@ This directory contains the current Python prototype stack:
 
 The stack is intentionally provider-agnostic. Telephony edges such as Asterisk, Twilio, or a generic SIP provider are expected to live behind adapter-specific integrations instead of being baked into the core services. The PBX is included in the one-click compose flow as a local test fixture.
 
+## Monorepo tooling
+
+The repository root uses a `uv` workspace (`/pyproject.toml`) to coordinate Python tooling across services.
+
+Each Python service has its own `pyproject.toml` and uses `hatchling` as the build backend:
+
+- `services/orchestrator/pyproject.toml`
+- `services/media-bridge/pyproject.toml`
+
+From the repository root:
+
+```bash
+uv sync --all-packages --dev
+uv run --all-packages ruff format .
+uv run --all-packages ruff check .
+uv run --package mimir-orchestrator pytest
+uv run --package mimir-media-bridge pytest
+```
+
+Both services are configured to run unit tests with coverage output (`pytest-cov`) by default.
+
 ## Services
 
 1. **Orchestrator** (`services/orchestrator`)
