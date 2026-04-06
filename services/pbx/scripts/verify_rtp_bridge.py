@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import sys
 import uuid
 import urllib.parse
 from dataclasses import dataclass
@@ -47,6 +48,26 @@ class AriClient:
         response = await self.client.delete(f"{self.base_url}{path}")
         if response.status_code not in {200, 204, 404}:
             response.raise_for_status()
+
+
+def _response_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text.strip() or response.reason_phrase
+
+    if isinstance(payload, dict):
+        detail = payload.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail
+    return json.dumps(payload)
+
+
+def _raise_for_status(response: httpx.Response, *, action: str) -> None:
+    if response.is_success:
+        return
+    detail = _response_detail(response)
+    raise RuntimeError(f"{action} failed with HTTP {response.status_code}: {detail}")
 
 
 async def main() -> None:
@@ -128,7 +149,7 @@ async def main() -> None:
                     "metadata": {"adapter_name": "asterisk-externalmedia-verifier"},
                 },
             )
-            media_session.raise_for_status()
+            _raise_for_status(media_session, action="create media session")
             media_session_payload = media_session.json()
             media_session_id = media_session_payload["session_id"]
             local_rtp = media_session_payload["rtp"]
@@ -160,7 +181,7 @@ async def main() -> None:
                 headers={"Idempotency-Key": f"start-{call_channel_id}"},
                 json={"remote_rtp": {"address": local_address, "port": int(local_port)}},
             )
-            start_response.raise_for_status()
+            _raise_for_status(start_response, action=f"start media session {media_session_id}")
             print(f"Media session {media_session_id} is active. Speak into the call to verify duplex RTP.")
 
             await _wait_for_call_end(websocket, call_channel_id=call_channel_id)
@@ -203,4 +224,10 @@ async def _wait_for_call_end(websocket: Any, *, call_channel_id: str) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        raise SystemExit(130)
+    except Exception as exc:
+        print(f"Verifier failed: {exc}", file=sys.stderr)
+        raise SystemExit(1)
