@@ -6,7 +6,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .audio import PcmAudio, load_wav, write_wav
-from .controller_contract import BridgeSessionStatus, CreateMediaSessionRequest
+from .controller_contract import (
+    BridgeSessionStatus,
+    CreateMediaSessionRequest,
+    RemoteRtpEndpoint,
+    RtpFlow,
+)
+from .live_rtp import LiveRtpBridge, LiveRtpHooks
+from .rtp import RtpSocketReservation, close_socket_quietly, reserve_rtp_socket
 from .runtimes import (
     GEMINI_RUNTIME,
     OPENAI_RUNTIME,
@@ -34,40 +41,114 @@ class FixtureRunSummary:
 
 
 @dataclass(slots=True)
+class RtpRuntimeConfig:
+    bind_address: str
+    advertised_address: str
+    port_range_start: int
+    port_range_end: int
+
+
+@dataclass(slots=True)
 class BackendSession:
     session_id: str
     call_id: str
     request: CreateMediaSessionRequest
+    rtp: RtpFlow
+    rtp_reservation: RtpSocketReservation
     status: str = BridgeSessionStatus.CREATED.value
     reason: str | None = None
     runtime: str = OPENAI_RUNTIME
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     first_audio_at: float | None = None
     last_fixture_run: FixtureRunSummary | None = None
+    live_bridge: LiveRtpBridge | None = None
+    mode: str | None = None
 
 
 class RuntimeMediaBackend:
-    def __init__(self, runtime: LiveRuntime, artifact_root: Path) -> None:
+    def __init__(self, runtime: LiveRuntime, artifact_root: Path, rtp_config: RtpRuntimeConfig) -> None:
         self.runtime = runtime
         self.runtime_name = runtime.runtime_name
         self.artifact_root = artifact_root
+        self.rtp_config = rtp_config
 
     def create(self, request: CreateMediaSessionRequest, session_id: str) -> BackendSession:
+        reservation = reserve_rtp_socket(
+            bind_address=self.rtp_config.bind_address,
+            advertised_address=self.rtp_config.advertised_address,
+            requested_port=request.rtp.local_port,
+            port_range_start=self.rtp_config.port_range_start,
+            port_range_end=self.rtp_config.port_range_end,
+        )
         return BackendSession(
             session_id=session_id,
             call_id=request.call_id,
             request=request,
             runtime=self.runtime_name,
+            rtp_reservation=reservation,
+            rtp=RtpFlow(
+                local_address=reservation.advertised_address,
+                local_port=reservation.local_port,
+                remote_address=request.rtp.remote_address,
+                remote_port=request.rtp.remote_port,
+            ),
         )
 
-    def start(self, session: BackendSession) -> BackendSession:
-        if session.status != BridgeSessionStatus.TERMINATED.value:
-            session.status = BridgeSessionStatus.ACTIVE.value
+    async def start(
+        self,
+        session: BackendSession,
+        *,
+        live: bool,
+        hooks: LiveRtpHooks | None = None,
+        remote_rtp: RemoteRtpEndpoint | None = None,
+    ) -> BackendSession:
+        if session.status == BridgeSessionStatus.TERMINATED.value:
+            return session
+
+        if remote_rtp is not None:
+            session.rtp = RtpFlow(
+                local_address=session.rtp.local_address,
+                local_port=session.rtp.local_port,
+                remote_address=remote_rtp.address,
+                remote_port=remote_rtp.port,
+            )
+
+        if live:
+            if hooks is None:
+                raise RuntimeError("live RTP start requires hooks")
+            if session.mode == "fixture":
+                raise RuntimeError("fixture sessions cannot be promoted to live RTP")
+            if not session.rtp.has_remote_target():
+                raise ValueError("remote RTP target is required to start live media")
+            if session.live_bridge is None:
+                runtime_session = await self.runtime.start_session(self._runtime_request(session))
+                live_bridge = LiveRtpBridge(
+                    reservation=session.rtp_reservation,
+                    runtime_session=runtime_session,
+                    hooks=hooks,
+                )
+                try:
+                    await live_bridge.activate(session.rtp.remote_address, session.rtp.remote_port)
+                    if session.request.ai_profile.greeting:
+                        await runtime_session.request_greeting()
+                except Exception:
+                    await live_bridge.stop()
+                    raise
+                session.live_bridge = live_bridge
+            session.mode = "live"
+        else:
+            session.mode = "fixture"
+
+        session.status = BridgeSessionStatus.ACTIVE.value
         return session
 
-    def stop(self, session: BackendSession, reason: str) -> BackendSession:
+    async def stop(self, session: BackendSession, reason: str) -> BackendSession:
         session.status = BridgeSessionStatus.TERMINATED.value
         session.reason = reason
+        if session.live_bridge is not None:
+            await session.live_bridge.stop()
+            session.live_bridge = None
+        close_socket_quietly(session.rtp_reservation.sock)
         return session
 
     async def run_fixture(
@@ -91,18 +172,7 @@ class RuntimeMediaBackend:
         if fixture_audio.duration_ms <= 0 and not include_greeting:
             raise RuntimeError("fixture runs without input audio must enable include_greeting")
 
-        runtime_request = RuntimeRequest(
-            runtime=self.runtime_name,
-            model_name=session.request.ai_profile.model_name,
-            voice=session.request.ai_profile.voice,
-            instructions=session.request.ai_profile.instructions,
-            greeting=session.request.ai_profile.greeting,
-            # Fixture playback is a single prerecorded turn, so explicit/manual turn
-            # handling is more reliable than inheriting live-call server VAD.
-            vad_mode="manual",
-            include_greeting=include_greeting,
-        )
-
+        runtime_request = self._runtime_request(session, include_greeting=include_greeting, vad_mode="manual")
         runtime_result = await self.runtime.run_fixture(
             request=runtime_request,
             input_audio=fixture_audio,
@@ -130,6 +200,23 @@ class RuntimeMediaBackend:
         session.last_fixture_run = summary
         return summary
 
+    def _runtime_request(
+        self,
+        session: BackendSession,
+        *,
+        include_greeting: bool = False,
+        vad_mode: str | None = None,
+    ) -> RuntimeRequest:
+        return RuntimeRequest(
+            runtime=self.runtime_name,
+            model_name=session.request.ai_profile.model_name,
+            voice=session.request.ai_profile.voice,
+            instructions=session.request.ai_profile.instructions,
+            greeting=session.request.ai_profile.greeting,
+            vad_mode=vad_mode or session.request.ai_profile.vad_mode,
+            include_greeting=include_greeting,
+        )
+
 
 class BackendRouter:
     """Runtime selection for the provider-agnostic media bridge."""
@@ -137,9 +224,19 @@ class BackendRouter:
     def __init__(self) -> None:
         artifact_root = Path(os.getenv("MEDIA_BRIDGE_ARTIFACT_ROOT", Path(__file__).resolve().parents[1] / "artifacts"))
         artifact_root.mkdir(parents=True, exist_ok=True)
+
+        bind_address = os.getenv("MEDIA_BRIDGE_RTP_BIND_ADDRESS", "0.0.0.0")
+        advertised_address_default = bind_address if bind_address not in {"0.0.0.0", "::"} else "127.0.0.1"
+        rtp_config = RtpRuntimeConfig(
+            bind_address=bind_address,
+            advertised_address=os.getenv("MEDIA_BRIDGE_RTP_ADVERTISED_ADDRESS", advertised_address_default),
+            port_range_start=int(os.getenv("MEDIA_BRIDGE_RTP_PORT_START", "12000")),
+            port_range_end=int(os.getenv("MEDIA_BRIDGE_RTP_PORT_END", "12099")),
+        )
+
         self._backends = {
-            OPENAI_RUNTIME: RuntimeMediaBackend(OpenAIRealtimeRuntime(), artifact_root=artifact_root),
-            GEMINI_RUNTIME: RuntimeMediaBackend(GeminiLiveRuntime(), artifact_root=artifact_root),
+            OPENAI_RUNTIME: RuntimeMediaBackend(OpenAIRealtimeRuntime(), artifact_root=artifact_root, rtp_config=rtp_config),
+            GEMINI_RUNTIME: RuntimeMediaBackend(GeminiLiveRuntime(), artifact_root=artifact_root, rtp_config=rtp_config),
         }
         self.default_runtime = os.getenv("MEDIA_BRIDGE_DEFAULT_RUNTIME", OPENAI_RUNTIME)
 

@@ -10,6 +10,6 @@ RUN apt-get update \
 
 COPY asterisk/ /etc/asterisk/
 
-EXPOSE 5060/udp 10000-10099/udp
+EXPOSE 5060/udp 8088 10000-10099/udp
 
 CMD ["asterisk", "-f", "-U", "asterisk", "-G", "asterisk", "-vvv"]

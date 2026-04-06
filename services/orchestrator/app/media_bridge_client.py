@@ -17,10 +17,11 @@ class MediaBridgeClient:
             response.raise_for_status()
             return response.json()
 
-    async def attach_media(self, session_id: str, idempotency_key: str) -> dict:
+    async def attach_media(self, session_id: str, idempotency_key: str, body: dict | None = None) -> dict:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(
                 f"{self.base_url}/v1/media/sessions/{session_id}/start",
+                json=body,
                 headers={"Idempotency-Key": idempotency_key},
             )
             response.raise_for_status()

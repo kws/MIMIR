@@ -31,29 +31,32 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
 
     backend = router.choose_backend(requested_runtime=runtime, model_name=request.ai_profile.model_name)
     session = backend.create(request, session_id=f"media-{uuid.uuid4()}")
-    backend.start(session)
-    summary = await backend.run_fixture(
-        session=session,
-        fixture_path=args.fixture,
-        output_wav_path=args.output,
-        timeout_seconds=args.timeout_seconds,
-        include_greeting=args.include_greeting,
-    )
-    return {
-        "session_id": session.session_id,
-        "call_id": session.call_id,
-        "runtime": session.runtime,
-        "fixture_path": summary.fixture_path,
-        "output_wav_path": summary.output_wav_path,
-        "output_sample_rate_hz": summary.output_sample_rate_hz,
-        "input_duration_ms": summary.input_duration_ms,
-        "output_duration_ms": summary.output_duration_ms,
-        "first_audio_latency_ms": summary.first_audio_latency_ms,
-        "input_transcript": summary.input_transcript,
-        "output_transcript": summary.output_transcript,
-        "vendor_session_id": summary.vendor_session_id,
-        "debug_events": getattr(session.last_fixture_run, "debug_events", None),
-    }
+    await backend.start(session, live=False)
+    try:
+        summary = await backend.run_fixture(
+            session=session,
+            fixture_path=args.fixture,
+            output_wav_path=args.output,
+            timeout_seconds=args.timeout_seconds,
+            include_greeting=args.include_greeting,
+        )
+        return {
+            "session_id": session.session_id,
+            "call_id": session.call_id,
+            "runtime": session.runtime,
+            "fixture_path": summary.fixture_path,
+            "output_wav_path": summary.output_wav_path,
+            "output_sample_rate_hz": summary.output_sample_rate_hz,
+            "input_duration_ms": summary.input_duration_ms,
+            "output_duration_ms": summary.output_duration_ms,
+            "first_audio_latency_ms": summary.first_audio_latency_ms,
+            "input_transcript": summary.input_transcript,
+            "output_transcript": summary.output_transcript,
+            "vendor_session_id": summary.vendor_session_id,
+            "debug_events": getattr(session.last_fixture_run, "debug_events", None),
+        }
+    finally:
+        await backend.stop(session, reason="fixture_complete")
 
 
 def main() -> None:

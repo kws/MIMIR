@@ -13,8 +13,10 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from pydantic import BaseModel, Field
 
 from .backends import BackendRouter, BackendSession, FixtureRunSummary
-from .controller_contract import CreateMediaSessionRequest, MediaSession, StopMediaSessionRequest
-from .runtimes import RuntimeConfigurationError
+from .controller_contract import CreateMediaSessionRequest, MediaSession, StartMediaSessionRequest, StopMediaSessionRequest
+from .live_rtp import LiveRtpHooks
+from .rtp import RtpInboundTelemetryTracker
+from .runtimes import RuntimeConfigurationError, RuntimeSessionTelemetry
 
 
 class TelemetryPayload(BaseModel):
@@ -74,7 +76,7 @@ class EventBus:
             await queue.put(event)
 
 
-app = FastAPI(title="MIMIR Media Bridge", version="2.1.0")
+app = FastAPI(title="MIMIR Media Bridge", version="2.2.0")
 _sessions: dict[str, BackendSession] = {}
 _event_bus = EventBus()
 _idempotency: dict[str, dict[str, Any]] = {}
@@ -126,6 +128,7 @@ def _to_media_session(record: BackendSession) -> MediaSession:
         call_id=record.call_id,
         status=record.status,
         reason=record.reason,
+        rtp=record.rtp,
     )
 
 
@@ -140,6 +143,64 @@ async def _emit_event(event_type: str, record: BackendSession, attributes: dict[
             "occurred_at": _now(),
             "attributes": {"runtime": record.runtime, **(attributes or {})},
         }
+    )
+
+
+def _live_rtp_hooks(record: BackendSession) -> LiveRtpHooks:
+    async def on_first_audio(first_audio_latency_ms: float) -> None:
+        if record.first_audio_at is None:
+            record.first_audio_at = time.time()
+            FIRST_AUDIO_LATENCY_SECONDS.labels(runtime=record.runtime).observe(first_audio_latency_ms / 1000.0)
+            await _emit_event("media.first_audio", record, {"first_audio_latency_ms": first_audio_latency_ms})
+
+    async def on_telemetry(tracker: RtpInboundTelemetryTracker, runtime_telemetry: RuntimeSessionTelemetry) -> None:
+        snapshot = tracker.snapshot()
+        if snapshot.packet_loss_pct:
+            RTP_PACKET_LOSS_PCT.labels(runtime=record.runtime).observe(snapshot.packet_loss_pct)
+        if snapshot.jitter_ms:
+            RTP_JITTER_MS.labels(runtime=record.runtime).observe(snapshot.jitter_ms)
+        if runtime_telemetry.ws_reconnects:
+            WS_RECONNECT_TOTAL.labels(runtime=record.runtime).inc(runtime_telemetry.ws_reconnects)
+        if runtime_telemetry.ws_errors:
+            WS_ERROR_TOTAL.labels(runtime=record.runtime).inc(runtime_telemetry.ws_errors)
+
+        await _emit_event(
+            "media.telemetry",
+            record,
+            {
+                "packet_loss_pct": snapshot.packet_loss_pct,
+                "jitter_ms": snapshot.jitter_ms,
+                "received_packets": snapshot.received_packets,
+                "invalid_packets": snapshot.invalid_packets,
+                "ws_reconnects": runtime_telemetry.ws_reconnects,
+                "ws_errors": runtime_telemetry.ws_errors,
+                "first_audio_latency_ms": None if record.first_audio_at is None else round((record.first_audio_at - record.created_at.timestamp()) * 1000.0, 2),
+                "vendor_session_id": runtime_telemetry.vendor_session_id,
+            },
+        )
+
+    async def on_failure(reason: str, tracker: RtpInboundTelemetryTracker, runtime_telemetry: RuntimeSessionTelemetry) -> None:
+        if record.status == "terminated":
+            return
+        record.status = "terminated"
+        record.reason = reason
+        CALL_COMPLETION_TOTAL.labels(result="failed", reason="live_bridge_failure", runtime=record.runtime).inc()
+        await _emit_event(
+            "media.session.failed",
+            record,
+            {
+                "reason": reason,
+                "packet_loss_pct": tracker.snapshot().packet_loss_pct,
+                "jitter_ms": tracker.snapshot().jitter_ms,
+                "ws_errors": runtime_telemetry.ws_errors,
+                "vendor_session_id": runtime_telemetry.vendor_session_id,
+            },
+        )
+
+    return LiveRtpHooks(
+        on_first_audio=on_first_audio,
+        on_telemetry=on_telemetry,
+        on_failure=on_failure,
     )
 
 
@@ -175,15 +236,19 @@ async def create_media_session(request: CreateMediaSessionRequest) -> MediaSessi
             "model_name": request.ai_profile.model_name,
             "voice": request.ai_profile.voice,
             "vad_mode": request.ai_profile.vad_mode,
-            "local_rtp": f"{request.rtp.local_address}:{request.rtp.local_port}",
-            "remote_rtp": f"{request.rtp.remote_address}:{request.rtp.remote_port}",
+            "local_rtp": f"{record.rtp.local_address}:{record.rtp.local_port}",
+            "remote_rtp": f"{record.rtp.remote_address}:{record.rtp.remote_port}",
         },
     )
     return _to_media_session(record)
 
 
 @app.post("/v1/media/sessions/{session_id}/start", response_model=MediaSession)
-async def start_media_session(session_id: str, idempotency_key: str = Header(..., alias="Idempotency-Key")) -> MediaSession:
+async def start_media_session(
+    session_id: str,
+    body: StartMediaSessionRequest | None = None,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+) -> MediaSession:
     key = f"attach_media:{session_id}:{idempotency_key}"
     if key in _idempotency:
         return MediaSession(**_idempotency[key])
@@ -199,8 +264,27 @@ async def start_media_session(session_id: str, idempotency_key: str = Header(...
 
     if record.status != "active":
         backend = backend_router.choose_backend(requested_runtime=record.runtime, model_name=record.request.ai_profile.model_name)
-        backend.start(record)
-        await _emit_event("media.session.active", record)
+        try:
+            await backend.start(
+                record,
+                live=True,
+                hooks=_live_rtp_hooks(record),
+                remote_rtp=body.remote_rtp if body else None,
+            )
+        except RuntimeConfigurationError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        await _emit_event(
+            "media.session.active",
+            record,
+            {
+                "local_rtp": f"{record.rtp.local_address}:{record.rtp.local_port}",
+                "remote_rtp": f"{record.rtp.remote_address}:{record.rtp.remote_port}",
+            },
+        )
 
     response = _to_media_session(record)
     _idempotency[key] = response.model_dump()
@@ -218,7 +302,7 @@ async def run_media_fixture(session_id: str, body: RunFixtureRequest) -> Fixture
 
     if record.status != "active":
         backend = backend_router.choose_backend(requested_runtime=record.runtime, model_name=record.request.ai_profile.model_name)
-        backend.start(record)
+        await backend.start(record, live=False)
         await _emit_event("media.session.active", record)
 
     backend = backend_router.choose_backend(requested_runtime=record.runtime, model_name=record.request.ai_profile.model_name)
@@ -299,7 +383,7 @@ async def stop_media_session(
         raise HTTPException(status_code=404, detail="media session not found")
 
     backend = backend_router.choose_backend(requested_runtime=record.runtime, model_name=record.request.ai_profile.model_name)
-    backend.stop(record, reason=body.reason)
+    await backend.stop(record, reason=body.reason)
     await _emit_event("media.session.ended", record, {"reason": body.reason})
     CALL_COMPLETION_TOTAL.labels(result="ended", reason=body.reason, runtime=record.runtime).inc()
     response = _to_media_session(record)

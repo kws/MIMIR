@@ -368,10 +368,15 @@ async def create_inbound_call(request: InboundCallRequest, idempotency_key: str 
     )
     await _update_projection(
         request.call_id,
-        {"media_session_id": media["session_id"], "bridge_session_id": media["bridge_session_id"]},
+        {
+            "media_session_id": media["session_id"],
+            "bridge_session_id": media["bridge_session_id"],
+            "bridge_rtp": media.get("rtp"),
+        },
     )
 
     started = await media_client.attach_media(media["session_id"], idempotency_key=f"attach-{idempotency_key}")
+    await _update_projection(request.call_id, {"bridge_rtp": started.get("rtp", media.get("rtp"))})
     _structured_log(
         "media_session_attached",
         call_id=request.call_id,

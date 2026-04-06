@@ -26,6 +26,14 @@ class RtpFlow(BaseModel):
     remote_address: str
     remote_port: int
 
+    def has_remote_target(self) -> bool:
+        return bool(self.remote_address) and self.remote_port > 0
+
+
+class RemoteRtpEndpoint(BaseModel):
+    address: str
+    port: int
+
 
 class MediaSessionConfig(BaseModel):
     model_name: str
@@ -51,6 +59,10 @@ class CreateMediaSessionRequest(BaseModel):
     metadata: dict[str, str] = Field(default_factory=dict)
 
 
+class StartMediaSessionRequest(BaseModel):
+    remote_rtp: RemoteRtpEndpoint | None = None
+
+
 class StopMediaSessionRequest(BaseModel):
     reason: str = "normal_clearing"
 
@@ -61,3 +73,4 @@ class MediaSession(BaseModel):
     call_id: str
     status: str
     reason: str | None = None
+    rtp: RtpFlow

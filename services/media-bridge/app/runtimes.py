@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
 import time
@@ -46,6 +47,31 @@ class RuntimeRunResult:
     debug_events: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class RuntimeSessionTelemetry:
+    vendor_session_id: str | None = None
+    ws_reconnects: int = 0
+    ws_errors: int = 0
+
+
+@dataclass(slots=True)
+class RuntimeStreamEvent:
+    event_type: str
+    audio: PcmAudio | None = None
+
+
+class RuntimeSession(Protocol):
+    async def send_audio(self, audio_input: PcmAudio) -> None: ...
+
+    async def request_greeting(self) -> None: ...
+
+    async def receive_event(self) -> RuntimeStreamEvent | None: ...
+
+    async def close(self) -> None: ...
+
+    def telemetry(self) -> RuntimeSessionTelemetry: ...
+
+
 class LiveRuntime(Protocol):
     runtime_name: str
     input_sample_rate_hz: int
@@ -57,6 +83,141 @@ class LiveRuntime(Protocol):
         timeout_seconds: float,
     ) -> RuntimeRunResult: ...
 
+    async def start_session(self, request: RuntimeRequest) -> RuntimeSession: ...
+
+
+class OpenAIRealtimeSession:
+    def __init__(self, runtime: "OpenAIRealtimeRuntime", request: RuntimeRequest, websocket: Any) -> None:
+        self.runtime = runtime
+        self.request = request
+        self.websocket = websocket
+        self._events: asyncio.Queue[RuntimeStreamEvent | Exception | None] = asyncio.Queue()
+        self._ready = asyncio.Event()
+        self._closed = asyncio.Event()
+        self._closing = False
+        self._fatal_error: RuntimeError | None = None
+        self._receiver_task: asyncio.Task[None] | None = None
+        self._telemetry = RuntimeSessionTelemetry()
+
+    @classmethod
+    async def connect(cls, runtime: "OpenAIRealtimeRuntime", request: RuntimeRequest) -> "OpenAIRealtimeSession":
+        websocket = await runtime._connect_websocket(model_name=request.model_name)
+        session = cls(runtime=runtime, request=request, websocket=websocket)
+        await websocket.send(json.dumps({"type": "session.update", "session": runtime._session_payload(request, continuous=True)}))
+        session._receiver_task = asyncio.create_task(session._receiver_loop())
+        try:
+            await asyncio.wait_for(session._ready.wait(), timeout=10.0)
+        except TimeoutError as exc:
+            await session.close()
+            raise TimeoutError("openai-realtime session did not become ready in time") from exc
+        if session._fatal_error is not None:
+            raise session._fatal_error
+        return session
+
+    async def send_audio(self, audio_input: PcmAudio) -> None:
+        if self._fatal_error is not None:
+            raise self._fatal_error
+        audio_input = audio_input.resample(self.runtime.input_sample_rate_hz)
+        for chunk in chunk_pcm16(audio_input, chunk_ms=20):
+            await self.websocket.send(
+                json.dumps(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(chunk).decode("ascii"),
+                    }
+                )
+            )
+
+    async def request_greeting(self) -> None:
+        if not self.request.greeting:
+            return
+        await self.websocket.send(
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "response": self.runtime._response_payload(self.request),
+                }
+            )
+        )
+
+    async def receive_event(self) -> RuntimeStreamEvent | None:
+        item = await self._events.get()
+        if item is None:
+            return None
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    async def close(self) -> None:
+        if self._closing:
+            await self._closed.wait()
+            return
+
+        self._closing = True
+        with contextlib.suppress(Exception):
+            await self.websocket.close()
+        if self._receiver_task is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._receiver_task
+        self._closed.set()
+
+    def telemetry(self) -> RuntimeSessionTelemetry:
+        return RuntimeSessionTelemetry(
+            vendor_session_id=self._telemetry.vendor_session_id,
+            ws_reconnects=self._telemetry.ws_reconnects,
+            ws_errors=self._telemetry.ws_errors,
+        )
+
+    async def _receiver_loop(self) -> None:
+        try:
+            while True:
+                raw_message = await self.websocket.recv()
+                message = json.loads(raw_message)
+                event_type = message.get("type", "")
+
+                if event_type == "session.created":
+                    self._telemetry.vendor_session_id = ((message.get("session") or {}).get("id")) or self._telemetry.vendor_session_id
+                    continue
+
+                if event_type == "session.updated":
+                    self._ready.set()
+                    continue
+
+                if event_type in {"response.output_audio.delta", "response.audio.delta"}:
+                    delta = message.get("delta")
+                    if delta:
+                        await self._events.put(
+                            RuntimeStreamEvent(
+                                event_type="audio",
+                                audio=PcmAudio(
+                                    pcm16=base64.b64decode(delta),
+                                    sample_rate_hz=self.runtime.output_sample_rate_hz,
+                                    channels=1,
+                                ),
+                            )
+                        )
+                    continue
+
+                if event_type in {"input_audio_buffer.speech_started", "response.cancelled", "response.interrupted"}:
+                    await self._events.put(RuntimeStreamEvent(event_type="clear"))
+                    continue
+
+                if event_type == "error":
+                    error = message.get("error") or {}
+                    error_text = error.get("message") or json.dumps(message)
+                    raise RuntimeError(f"{self.runtime.runtime_name} returned an error: {error_text}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not self._closing:
+                self._telemetry.ws_errors += 1
+                self._fatal_error = RuntimeError(f"{self.runtime.runtime_name} live session failed: {exc}")
+                await self._events.put(self._fatal_error)
+                self._ready.set()
+        finally:
+            await self._events.put(None)
+            self._closed.set()
+
 
 class OpenAIRealtimeRuntime:
     runtime_name = OPENAI_RUNTIME
@@ -66,25 +227,17 @@ class OpenAIRealtimeRuntime:
     def __init__(self, api_key_env: str = "OPENAI_API_KEY") -> None:
         self.api_key_env = api_key_env
 
+    async def start_session(self, request: RuntimeRequest) -> RuntimeSession:
+        self._api_key()
+        return await OpenAIRealtimeSession.connect(runtime=self, request=request)
+
     async def run_fixture(
         self,
         request: RuntimeRequest,
         input_audio: PcmAudio,
         timeout_seconds: float,
     ) -> RuntimeRunResult:
-        try:
-            import websockets
-        except ImportError as exc:  # pragma: no cover - dependency is installed in the service image
-            raise RuntimeConfigurationError("websockets is not installed") from exc
-
-        api_key = os.getenv(self.api_key_env)
-        if not api_key:
-            raise RuntimeConfigurationError(f"{self.api_key_env} is required for {self.runtime_name}")
-
         model_name = request.model_name or OPENAI_DEFAULT_MODEL
-        websocket_url = f"wss://api.openai.com/v1/realtime?model={urllib.parse.quote(model_name, safe='')}"
-        headers = {"Authorization": f"Bearer {api_key}"}
-
         audio_input = input_audio.resample(self.input_sample_rate_hz)
         output_audio_chunks: list[bytes] = []
         output_transcript_parts: list[str] = []
@@ -95,14 +248,9 @@ class OpenAIRealtimeRuntime:
         first_audio_latency_ms: float | None = None
         started_at = time.monotonic()
 
-        async with websockets.connect(
-            websocket_url,
-            additional_headers=headers,
-            max_size=None,
-            ping_interval=20,
-            ping_timeout=20,
-        ) as websocket:
-            await websocket.send(json.dumps({"type": "session.update", "session": self._session_payload(request)}))
+        websocket = await self._connect_websocket(model_name=model_name)
+        try:
+            await websocket.send(json.dumps({"type": "session.update", "session": self._session_payload(request, continuous=False)}))
 
             current_response_requested = False
             if input_audio.duration_ms > 0:
@@ -179,6 +327,9 @@ class OpenAIRealtimeRuntime:
                     error = message.get("error") or {}
                     error_text = error.get("message") or json.dumps(message)
                     raise RuntimeError(f"{self.runtime_name} returned an error: {error_text}")
+        finally:
+            with contextlib.suppress(Exception):
+                await websocket.close()
 
         return RuntimeRunResult(
             runtime=self.runtime_name,
@@ -195,7 +346,29 @@ class OpenAIRealtimeRuntime:
             debug_events=debug_events,
         )
 
-    def _session_payload(self, request: RuntimeRequest) -> dict[str, Any]:
+    async def _connect_websocket(self, model_name: str | None) -> Any:
+        try:
+            import websockets
+        except ImportError as exc:  # pragma: no cover - dependency is installed in the service image
+            raise RuntimeConfigurationError("websockets is not installed") from exc
+
+        resolved_model_name = model_name or OPENAI_DEFAULT_MODEL
+        websocket_url = f"wss://api.openai.com/v1/realtime?model={urllib.parse.quote(resolved_model_name, safe='')}"
+        return await websockets.connect(
+            websocket_url,
+            additional_headers={"Authorization": f"Bearer {self._api_key()}"},
+            max_size=None,
+            ping_interval=20,
+            ping_timeout=20,
+        )
+
+    def _api_key(self) -> str:
+        api_key = os.getenv(self.api_key_env)
+        if not api_key:
+            raise RuntimeConfigurationError(f"{self.api_key_env} is required for {self.runtime_name}")
+        return api_key
+
+    def _session_payload(self, request: RuntimeRequest, *, continuous: bool) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "type": "realtime",
             "instructions": request.instructions,
@@ -212,12 +385,22 @@ class OpenAIRealtimeRuntime:
             "output_modalities": ["audio"],
         }
         if request.vad_mode == "server_vad":
-            payload["audio"]["input"]["turn_detection"] = {"type": "server_vad"}
+            turn_detection: dict[str, Any] = {"type": "server_vad"}
+            if continuous:
+                turn_detection.update(
+                    {
+                        "create_response": True,
+                        "interrupt_response": True,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 500,
+                    }
+                )
+            payload["audio"]["input"]["turn_detection"] = turn_detection
         return payload
 
     def _response_payload(self, request: RuntimeRequest) -> dict[str, Any]:
         payload: dict[str, Any] = {}
-        if request.include_greeting and request.greeting:
+        if request.greeting:
             payload["instructions"] = request.greeting
         return payload
 
@@ -242,6 +425,9 @@ class GeminiLiveRuntime:
 
     def __init__(self, api_key_env: str = "GEMINI_API_KEY") -> None:
         self.api_key_env = api_key_env
+
+    async def start_session(self, request: RuntimeRequest) -> RuntimeSession:
+        raise RuntimeConfigurationError(f"live RTP is not implemented for {self.runtime_name}")
 
     async def run_fixture(
         self,

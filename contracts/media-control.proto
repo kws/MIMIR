@@ -24,6 +24,11 @@ message RtpFlow {
   uint32 remote_port = 4;
 }
 
+message RemoteRtpEndpoint {
+  string address = 1;
+  uint32 port = 2;
+}
+
 message AIProfile {
   string voice = 1;
   string instructions = 2;
@@ -51,6 +56,7 @@ message CreateMediaSessionRequest {
 message StartMediaSessionRequest {
   string session_id = 1;
   string idempotency_key = 2;
+  RemoteRtpEndpoint remote_rtp = 3;
 }
 
 message StopMediaSessionRequest {
@@ -94,6 +100,7 @@ message MediaSession {
   string call_id = 3;
   MediaStatus status = 4;
   string reason = 5;
+  RtpFlow rtp = 6;
 }
 
 message MediaLifecycleEvent {

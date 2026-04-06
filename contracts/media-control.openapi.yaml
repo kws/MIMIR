@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: MIMIR Media Bridge Control API
-  version: 2.0.0
+  version: 2.2.0
   description: |
     Versioned HTTP contract between the orchestrator and the media bridge.
     This contract documents the provider-agnostic media API implemented in this repository today.
@@ -39,6 +39,12 @@ paths:
       parameters:
         - $ref: '#/components/parameters/SessionId'
         - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartMediaSessionRequest'
       responses:
         '200':
           description: Media session state after start
@@ -169,6 +175,14 @@ components:
           type: string
         remote_port:
           type: integer
+    RemoteRtpEndpoint:
+      type: object
+      required: [address, port]
+      properties:
+        address:
+          type: string
+        port:
+          type: integer
     AIProfile:
       type: object
       required: [model_name, voice, instructions, greeting, vad_mode]
@@ -216,6 +230,11 @@ components:
           type: object
           additionalProperties:
             type: string
+    StartMediaSessionRequest:
+      type: object
+      properties:
+        remote_rtp:
+          $ref: '#/components/schemas/RemoteRtpEndpoint'
     StopMediaSessionRequest:
       type: object
       required: [reason]
@@ -224,7 +243,7 @@ components:
           type: string
     MediaSession:
       type: object
-      required: [session_id, bridge_session_id, call_id, status]
+      required: [session_id, bridge_session_id, call_id, status, rtp]
       properties:
         session_id:
           type: string
@@ -238,6 +257,8 @@ components:
         reason:
           type: string
           nullable: true
+        rtp:
+          $ref: '#/components/schemas/RtpFlow'
     TelemetryPayload:
       type: object
       properties:

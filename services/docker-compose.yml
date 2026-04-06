@@ -4,6 +4,7 @@ services:
       context: ./pbx
     ports:
       - "5060:5060/udp"
+      - "8088:8088"
       - "10000-10099:10000-10099/udp"
 
   media-bridge:
@@ -12,8 +13,13 @@ services:
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      MEDIA_BRIDGE_RTP_BIND_ADDRESS: ${MEDIA_BRIDGE_RTP_BIND_ADDRESS:-0.0.0.0}
+      MEDIA_BRIDGE_RTP_ADVERTISED_ADDRESS: ${MEDIA_BRIDGE_RTP_ADVERTISED_ADDRESS:-media-bridge}
+      MEDIA_BRIDGE_RTP_PORT_START: ${MEDIA_BRIDGE_RTP_PORT_START:-12000}
+      MEDIA_BRIDGE_RTP_PORT_END: ${MEDIA_BRIDGE_RTP_PORT_END:-12099}
     ports:
       - "8081:8081"
+      - "12000-12099:12000-12099/udp"
 
   orchestrator:
     build:
