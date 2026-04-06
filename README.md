@@ -121,6 +121,17 @@ You can configure multiple extensions, each representing a different scientist. 
 
 (Configuration details can be found in the extension configuration files)
 
+
+## 🧩 New Deployable Service Split
+
+A deployable two-service extraction is now included under `services/`:
+
+- `services/sip-flow-handler`: SIP registration + INVITE policy + call state machine
+- `services/media-bridge`: RTP/websocket AI/media runtime with SSE event stream
+- `contracts/media-control.openapi.yaml` and `contracts/media-control.proto`: explicit control contracts
+
+See `services/README.md` for run/build steps and extraction anchors.
+
 ## 🏗️ Technical Architecture
 
 MIMIR is built on solid foundations:

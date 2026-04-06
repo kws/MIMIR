@@ -1,0 +1,173 @@
+openapi: 3.0.3
+info:
+  title: MIMIR Media Bridge Control API
+  version: 1.0.0
+servers:
+  - url: http://media-bridge:8081
+paths:
+  /v1/media/sessions:
+    post:
+      summary: Create media session
+      operationId: createMediaSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMediaSessionRequest'
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaSession'
+  /v1/media/sessions/{sessionId}/start:
+    post:
+      summary: Start media flow
+      operationId: startMediaSession
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaSession'
+  /v1/media/sessions/{sessionId}/stop:
+    post:
+      summary: Stop media flow
+      operationId: stopMediaSession
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Stopped
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaSession'
+  /v1/media/sessions/{sessionId}:
+    get:
+      summary: Fetch media session status
+      operationId: getMediaSession
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaSession'
+  /v1/media/events:
+    get:
+      summary: Stream media lifecycle and telemetry events (SSE)
+      operationId: streamEvents
+      parameters:
+        - in: query
+          name: session_id
+          required: false
+          schema:
+            type: string
+          description: Optional comma-separated media session IDs
+      responses:
+        '200':
+          description: Server-sent event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+components:
+  schemas:
+    SipParticipant:
+      type: object
+      required: [caller, callee, called_extension]
+      properties:
+        caller:
+          type: string
+        callee:
+          type: string
+        called_extension:
+          type: string
+    RtpFlow:
+      type: object
+      required: [local_address, local_port, remote_address, remote_port]
+      properties:
+        local_address:
+          type: string
+        local_port:
+          type: integer
+        remote_address:
+          type: string
+        remote_port:
+          type: integer
+    MediaSessionConfig:
+      type: object
+      required: [model, voice, instructions, greeting, input_codec, output_codec, sample_rate_hz]
+      properties:
+        model:
+          type: string
+        voice:
+          type: string
+        instructions:
+          type: string
+        greeting:
+          type: string
+        input_codec:
+          type: string
+        output_codec:
+          type: string
+        sample_rate_hz:
+          type: integer
+    CreateMediaSessionRequest:
+      type: object
+      required: [call_id, participant, config, rtp]
+      properties:
+        call_id:
+          type: string
+        participant:
+          $ref: '#/components/schemas/SipParticipant'
+        config:
+          $ref: '#/components/schemas/MediaSessionConfig'
+        rtp:
+          $ref: '#/components/schemas/RtpFlow'
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+    MediaSession:
+      type: object
+      required: [session_id, call_id, status]
+      properties:
+        session_id:
+          type: string
+        call_id:
+          type: string
+        status:
+          type: string
+          enum: [created, starting, active, stopping, terminated, failed]
+        reason:
+          type: string

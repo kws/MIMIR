@@ -1,0 +1,18 @@
+version: "3.9"
+services:
+  media-bridge:
+    build:
+      context: ./media-bridge
+    ports:
+      - "8081:8081"
+
+  sip-flow-handler:
+    build:
+      context: ./sip-flow-handler
+    environment:
+      MEDIA_BRIDGE_URL: http://media-bridge:8081
+      ALLOWED_EXTENSIONS: 2001,2002,2003
+    depends_on:
+      - media-bridge
+    ports:
+      - "8080:8080"
