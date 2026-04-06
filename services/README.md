@@ -1,6 +1,6 @@
-# MIMIR Service Extraction Plan (Deployable Split)
+# MIMIR Services (Python-only)
 
-This directory introduces a strict split between SIP control and media runtime for an **inbound-only** telephony system.
+This directory contains the deployable Python implementation of MIMIR.
 
 ## Services
 
@@ -9,106 +9,43 @@ This directory introduces a strict split between SIP control and media runtime f
    - Talks to Media Bridge exclusively over network control APIs.
 
 2. **Media Bridge** (`services/media-bridge`)
-   - Owns RTP/media lifecycle, AI websocket lifecycle, and audio processing runtime hooks.
+   - Owns RTP/media lifecycle abstractions, runtime selection, and AI/media bridge telemetry.
    - Enforces `direction == inbound` before allocating media sessions.
-   - Exposes HTTP control APIs and an SSE event stream. A matching gRPC contract is in `contracts/media-control.proto`.
+   - Exposes HTTP control APIs and an SSE event stream.
 
-## Observability baseline (runtime swap evidence)
+## Control contracts
+
+- HTTP control API: `contracts/media-control.openapi.yaml`
+- Event stream: `GET /v1/media/events` (SSE)
+- gRPC contract: `contracts/media-control.proto`
+
+No in-process references are permitted between SIP flow logic and media runtime logic; interaction is contract-driven over APIs/events.
+
+## Observability baseline
 
 - SIP Flow Handler and Media Bridge expose `GET /metrics` for Prometheus scraping.
-- Structured logs include `call_id` and `bridge_session_id` (where available) to correlate SIP handler, controller, and media runtime behavior.
-- Media Bridge telemetry ingestion endpoint (`POST /v1/media/sessions/{session_id}/telemetry`) captures RTP loss/jitter and websocket reconnect/error signals with a `runtime` label, enabling Python-vs-alternative evidence collection.
+- Structured logs include `call_id` and `bridge_session_id` where available.
+- Media Bridge telemetry endpoint (`POST /v1/media/sessions/{session_id}/telemetry`) captures RTP loss/jitter and websocket reconnect/error signals.
 - Dashboards and SLO recording/alert rules are provided in `/observability`.
 
-## Explicit Backend Control Interface
-
-- HTTP Control API: `contracts/media-control.openapi.yaml`
-- Event Stream: `GET /v1/media/events` (SSE)
-- gRPC Contract: `contracts/media-control.proto`
-
-No in-process object references are permitted between SIP flow logic and media runtime logic; only remote API calls/events.
-
-## Four-Phase Runtime Migration Plan
-
-The extraction follows an incremental, low-risk rollout with a **stable controller contract and state model** across all phases:
-
-1. **Phase 1 — Controller contract extraction**
-   - Keep existing Java media internals as-is.
-   - Lock controller API/event/state contract (`contracts/media-control.openapi.yaml`, `contracts/media-control.proto`).
-2. **Phase 2 — Python SIP handler integration**
-   - Implement SIP handler logic against controller APIs only.
-   - Keep Java media bridge path as the default backend.
-3. **Phase 3 — Second media backend behind same contract**
-   - Add an alternative high-performance backend (for example Rust/JVM optimized path) under the same controller contract.
-   - No SIP-side contract or call-state model changes allowed.
-4. **Phase 4 — Percentage-based A/B**
-   - Route traffic by deterministic percentage split.
-   - Compare KPI deltas (invite→answer, first-audio, websocket error/reconnect, RTP jitter/loss) before full cutover.
-
-### Stability guardrails
+## Runtime selection and stability guardrails
 
 - `MEDIA_BACKEND_SECONDARY_PERCENT` controls percentage routed to secondary backend (0-100).
-- Backend routing is deterministic by `call_id` hash to keep retries/idempotency stable.
-- Runtime selection can be pinned per call via `metadata.bridge_runtime` for targeted validation.
+- Backend routing is deterministic by `call_id` hash.
+- Runtime can be pinned per call via `metadata.bridge_runtime`.
 - Session states remain stable (`created`, `active`, `terminated`) independent of backend.
 
-## Ownership and Failure Arbitration Rules
+## Ownership boundaries
 
-### Termination ownership boundaries
+- **SIP Flow Handler owns SIP dialog termination**.
+- **Media Bridge owns media/websocket cleanup**.
+- **Controller contract/state model arbitrates timeout and failure transitions**.
 
-- **SIP Flow Handler owns SIP dialog termination**:
-  - Sends final SIP response (`4xx/5xx`) if a call fails before answer.
-  - Sends `BYE` (or equivalent finalization) for established dialogs when controller declares failure/timeout.
-  - Owns final `CallEnded` projection state publication for signaling-side lifecycle.
-- **Media Bridge owns media socket/websocket cleanup**:
-  - Closes RTP sockets, websocket sessions, and media workers.
-  - Releases media allocation and emits cleanup completion/failure event.
-  - Must perform idempotent cleanup even if SIP side has already terminated.
-- **Controller arbitrates timeout and failure transitions**:
-  - Evaluates timer expirations and asynchronous failure events from either side.
-  - Selects terminal state and required compensating actions.
-  - Prevents split-brain by issuing a single terminal decision for each `call_id`.
-
-### Timeout matrix (explicit timers and compensating actions)
-
-| Timer | Starts at | Expiry terminal state | Required compensating action |
-|---|---|---|---|
-| **Media allocation timeout** | INVITE accepted by controller and media allocation requested from Media Bridge | `FAILED_MEDIA_ALLOCATION_TIMEOUT` | Controller commands Media Bridge `release(call_id)`; SIP Flow Handler sends pre-answer failure response (`503 Service Unavailable` equivalent); publish hangup reason `MEDIA_ALLOCATION_TIMEOUT`. |
-| **First-audio timeout** | Media Bridge reports session allocated/connected and call is answered | `FAILED_FIRST_AUDIO_TIMEOUT` | Controller commands Media Bridge cleanup; SIP Flow Handler terminates dialog (`BYE` if answered, otherwise `408 Request Timeout` equivalent); propagate hangup reason `FIRST_AUDIO_TIMEOUT` to SIP CDR and event stream. |
-| **Idle/no-media timeout** | First audio observed (bi-directional media phase) and idle watchdog armed | `ENDED_IDLE_TIMEOUT` | Controller commands normal teardown; SIP Flow Handler issues `BYE` with normal-call-clear fallback semantics; Media Bridge closes RTP/websocket and marks reason `IDLE_NO_MEDIA_TIMEOUT`. |
-| **Graceful shutdown timeout** | Shutdown initiated after terminal decision; waiting for SIP + media confirmation | `ENDED_FORCED_SHUTDOWN` | Controller force-closes remaining resources; SIP Flow Handler force-terminates outstanding dialog leg(s); Media Bridge force-closes sockets/websocket; record hangup reason `GRACEFUL_SHUTDOWN_TIMEOUT` and audit forced cleanup. |
-
-### Compensation invariants
-
-- Every timeout transition must:
-  1. Emit a single terminal event with `call_id`, `terminal_state`, and `hangup_reason`.
-  2. Trigger both signaling-side and media-side teardown paths (order may vary, both required).
-  3. Be safe under retries (idempotent `release/terminate` calls).
-- If SIP and media outcomes differ (e.g., SIP already ended but media still alive), controller must treat call as non-terminal until both cleanup confirmations are observed or graceful-shutdown timeout forces closure.
-- If any compensating action fails, controller records failure cause and escalates to forced shutdown path.
-
-## Inbound-Only Policy
+## Inbound-only policy
 
 - Only inbound INVITE paths are supported.
-- Outbound call origination APIs are intentionally omitted.
-- Any outbound origination attempt must be rejected with an explicit error code and audit log entry.
-- Call logging is mandatory to support abuse and fraud investigations.
-
-### Explicit non-goals
-
-- Outbound campaign features.
-- Auto-dialer hooks or batch dial integrations.
-
-## Extraction Anchors from Existing Java Monolith
-
-### SIP/control roots (to move into SIP Flow Handler)
-- `src/main/java/com/kajsiebert/mimir/openai/OpenAIRealtimeUserAgent.java`
-- `src/main/java/com/kajsiebert/mimir/openai/OpenAICallController.java`
-
-### Media roots (to move into Media Bridge)
-- `src/main/java/com/kajsiebert/mimir/openai/OpenAIRealtimeBridge.java`
-- `src/main/java/com/kajsiebert/mimir/openai/websocket/WebsocketSession.java`
-- `src/main/java/com/kajsiebert/mimir/openai/rtp/RTPSession.java`
+- Outbound call origination APIs are intentionally omitted/rejected.
+- Call logging is mandatory for abuse/fraud investigations.
 
 ## Run locally
 

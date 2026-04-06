@@ -15,7 +15,7 @@ class BackendSession:
     call_id: str
     status: str = BridgeSessionStatus.CREATED.value
     reason: str | None = None
-    runtime: str = "python-java"
+    runtime: str = "python"
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     first_audio_at: float | None = None
 
@@ -33,10 +33,10 @@ class MediaBackend(Protocol):
         ...
 
 
-class JavaMediaBridgeBackend:
-    """Phase 1/2 backend: preserves current bridge behavior against Java internals."""
+class PythonMediaBackend:
+    """Default Python media backend."""
 
-    runtime_name = "python-java"
+    runtime_name = "python"
 
     def create(self, request: CreateMediaSessionRequest, session_id: str) -> BackendSession:
         return BackendSession(session_id=session_id, call_id=request.call_id, runtime=self.runtime_name)
@@ -52,10 +52,10 @@ class JavaMediaBridgeBackend:
         return session
 
 
-class HighPerformanceMediaBackend:
-    """Phase 3 backend placeholder (Rust/optimized runtime) behind same contract."""
+class PythonOptimizedBackend:
+    """Optional secondary backend placeholder behind the same Python contract."""
 
-    runtime_name = "python-rust"
+    runtime_name = "python-optimized"
 
     def create(self, request: CreateMediaSessionRequest, session_id: str) -> BackendSession:
         return BackendSession(session_id=session_id, call_id=request.call_id, runtime=self.runtime_name)
@@ -72,11 +72,11 @@ class HighPerformanceMediaBackend:
 
 
 class BackendRouter:
-    """Deterministic, call-id-based A/B runtime assignment."""
+    """Deterministic, call-id-based runtime assignment."""
 
     def __init__(self) -> None:
-        self.primary = JavaMediaBridgeBackend()
-        self.secondary = HighPerformanceMediaBackend()
+        self.primary = PythonMediaBackend()
+        self.secondary = PythonOptimizedBackend()
         self.secondary_percentage = max(0, min(100, int(os.getenv("MEDIA_BACKEND_SECONDARY_PERCENT", "0"))))
 
     def choose_backend(self, call_id: str, requested_runtime: str | None = None) -> MediaBackend:
