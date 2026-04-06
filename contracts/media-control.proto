@@ -20,10 +20,24 @@ message Endpoint {
 
 message CreateMediaSessionRequest {
   string call_id = 1;
-  string codec = 2;
-  Endpoint local_rtp = 3;
-  Endpoint remote_rtp = 4;
-  string ai_profile = 5;
+  Endpoint local_rtp = 2;
+  Endpoint remote_rtp = 3;
+  AIProfile ai_profile = 4;
+  MediaSettings media_settings = 5;
+}
+
+message AIProfile {
+  string voice = 1;
+  string instructions = 2;
+  string greeting = 3;
+  string vad_mode = 4;
+  string model_name = 5;
+}
+
+message MediaSettings {
+  string input_codec = 1;
+  string output_codec = 2;
+  uint32 sample_rate_hz = 3;
 }
 
 message StartMediaRequest {

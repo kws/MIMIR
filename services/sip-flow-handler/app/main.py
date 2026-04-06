@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from .config_service import AIProfile, AIProfileConfigService
 from .datastore import create_datastore, now_iso
 from .media_bridge_client import MediaBridgeClient
 
@@ -87,12 +88,19 @@ policy_engine = PolicyEngine(set(os.getenv("ALLOWED_EXTENSIONS", "2001,2002,2003
 datastore = create_datastore()
 event_bus = EventBus()
 logger = logging.getLogger("sip-flow-handler")
+profile_config = AIProfileConfigService(os.getenv("AI_PROFILE_CONFIG_PATH", "/tmp/mimir-ai-profiles.json"))
 
 ALLOWED_TRUNK_SOURCES = {item.strip() for item in os.getenv("ALLOWED_TRUNK_SOURCES", "").split(",") if item.strip()}
 MAX_ACTIVE_CALLS_PER_SOURCE = int(os.getenv("MAX_ACTIVE_CALLS_PER_SOURCE", "20"))
 TERMINAL_STATES = {CallState.ENDED.value, CallState.FAILED.value}
 OUTBOUND_BLOCKED_ERROR_CODE = "OUTBOUND_ORIGINATION_DISABLED"
 OUTBOUND_BLOCKED_HTTP_STATUS = 403
+
+
+class AIProfileMappingRequest(BaseModel):
+    called_extension: str
+    callee: str
+    profile: AIProfile
 
 
 def _audit_log(event: str, details: dict[str, Any]) -> None:
@@ -238,20 +246,14 @@ async def inbound_invite(invite: InvitePayload, idempotency_key: str = Header(..
         return {"call_id": invite.call_id, "state": CallState.FAILED.value, "action": "reject", "reason": policy_reason}
 
     await _publish_event(invite.call_id, "call.media_allocating", {})
+    resolved_profile = profile_config.resolve(invite.called_extension, invite.callee)
     media = await media_client.create_session(
         {
             "call_id": invite.call_id,
             "direction": "inbound",
             "participant": {"caller": invite.caller, "callee": invite.callee, "called_extension": invite.called_extension},
-            "config": {
-                "model": "gpt-4o-realtime-preview-2024-12-17",
-                "voice": "alloy",
-                "instructions": "Speak like the configured historical scientist.",
-                "greeting": "Hello, this is your scientist speaking.",
-                "input_codec": "g711_ulaw",
-                "output_codec": "g711_ulaw",
-                "sample_rate_hz": 8000,
-            },
+            "ai_profile": resolved_profile.model_dump(),
+            "media_settings": {"input_codec": "g711_ulaw", "output_codec": "g711_ulaw", "sample_rate_hz": 8000},
             "rtp": invite.rtp,
             "metadata": {"source": "sip-flow-handler"},
         }
@@ -316,3 +318,14 @@ async def stream_call_events():
 @app.get("/healthz")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "sip-flow-handler"}
+
+
+@app.put("/v1/config/ai-profiles")
+async def upsert_ai_profile_mapping(request: AIProfileMappingRequest) -> dict[str, Any]:
+    profile_config.upsert(request.called_extension, request.callee, request.profile)
+    return {
+        "status": "saved",
+        "called_extension": request.called_extension,
+        "callee": request.callee,
+        "profile": request.profile.model_dump(),
+    }
