@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.runtimes import OpenAIRealtimeRuntime, RuntimeRequest, build_initial_response_prompt
+from mimir.mediabridge.runtimes import OpenAIRealtimeRuntime, RuntimeRequest, build_initial_response_prompt
 
 
 def _request(*, greeting: str = "Hello from MIMIR.", initialisation: str | None = None) -> RuntimeRequest:

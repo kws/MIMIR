@@ -17,8 +17,8 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["app"]
+packages = ["mimir"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=app --cov-report=term-missing --cov-report=xml"
+addopts = "--cov=mimir.mediabridge --cov-report=term-missing --cov-report=xml"

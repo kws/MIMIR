@@ -1,4 +1,4 @@
-from app.audio import PcmAudio, chunk_pcm16, resample_pcm16_mono
+from mimir.mediabridge.audio import PcmAudio, chunk_pcm16, resample_pcm16_mono
 
 
 def test_pcm_duration_ms() -> None:
