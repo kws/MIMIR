@@ -6,10 +6,10 @@ import socket
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-import app.main as media_main
-from app.audio import PcmAudio
-from app.rtp import G711_ULAW_PAYLOAD_BYTES, RTP_PAYLOAD_TYPE_PCMU, RtpPacket, build_rtp_packet, parse_rtp_packet
-from app.runtimes import OPENAI_RUNTIME, RuntimeRunResult, RuntimeSessionTelemetry, RuntimeStreamEvent
+import mimir.mediabridge.main as media_main
+from mimir.mediabridge.audio import PcmAudio
+from mimir.mediabridge.rtp import G711_ULAW_PAYLOAD_BYTES, RTP_PAYLOAD_TYPE_PCMU, RtpPacket, build_rtp_packet, parse_rtp_packet
+from mimir.mediabridge.runtimes import OPENAI_RUNTIME, RuntimeRunResult, RuntimeSessionTelemetry, RuntimeStreamEvent
 
 
 class FakeRuntimeSession:

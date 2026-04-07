@@ -52,6 +52,18 @@ uv run --package mimir-media-bridge pytest
 
 Both service projects are configured to run `pytest` with `pytest-cov` via their `pyproject.toml` settings.
 
+## Python package namespaces
+
+Both Python services now publish code under a shared top-level `mimir` namespace package so imports are unambiguous when both projects are open in one workspace:
+
+- Orchestrator package path: `mimir.orchestrator` (`services/orchestrator/mimir/orchestrator`)
+- Media bridge package path: `mimir.mediabridge` (`services/media-bridge/mimir/mediabridge`)
+
+Container startup uses these module paths:
+
+- Orchestrator: `uvicorn mimir.orchestrator.main:app`
+- Media bridge: `uvicorn mimir.mediabridge.main:app`
+
 ## Requirements
 
 - Docker + Docker Compose

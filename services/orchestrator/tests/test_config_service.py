@@ -1,6 +1,6 @@
 import json
 
-from app.config_service import AIProfile, AIProfileConfigService
+from mimir.orchestrator.config_service import AIProfile, AIProfileConfigService
 
 
 def test_resolve_prefers_pair_over_extension_and_default(tmp_path) -> None:

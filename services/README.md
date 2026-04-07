@@ -29,6 +29,18 @@ uv run --package mimir-media-bridge pytest
 
 Both services are configured to run unit tests with coverage output (`pytest-cov`) by default.
 
+## Python import paths
+
+To avoid ambiguous `app.*` imports across services, the repo now uses a shared `mimir` namespace package with service-specific modules:
+
+- Orchestrator modules live under `mimir.orchestrator` (`services/orchestrator/mimir/orchestrator`)
+- Media bridge modules live under `mimir.mediabridge` (`services/media-bridge/mimir/mediabridge`)
+
+When starting with Uvicorn, use:
+
+- `mimir.orchestrator.main:app`
+- `mimir.mediabridge.main:app`
+
 ## Services
 
 1. **Orchestrator** (`services/orchestrator`)

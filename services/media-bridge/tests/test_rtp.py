@@ -1,5 +1,5 @@
-from app.audio import PcmAudio
-from app.rtp import (
+from mimir.mediabridge.audio import PcmAudio
+from mimir.mediabridge.rtp import (
     G711_ULAW_PAYLOAD_BYTES,
     RTP_PAYLOAD_TYPE_PCMU,
     RtpInboundTelemetryTracker,

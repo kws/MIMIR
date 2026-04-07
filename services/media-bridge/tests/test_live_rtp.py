@@ -5,9 +5,9 @@ import socket
 
 import pytest
 
-from app.audio import PcmAudio
-from app.live_rtp import LiveRtpBridge, LiveRtpHooks
-from app.rtp import (
+from mimir.mediabridge.audio import PcmAudio
+from mimir.mediabridge.live_rtp import LiveRtpBridge, LiveRtpHooks
+from mimir.mediabridge.rtp import (
     G711_ULAW_PAYLOAD_BYTES,
     RTP_PAYLOAD_TYPE_PCMU,
     RtpPacket,
@@ -15,7 +15,7 @@ from app.rtp import (
     parse_rtp_packet,
     reserve_rtp_socket,
 )
-from app.runtimes import RuntimeSessionTelemetry, RuntimeStreamEvent
+from mimir.mediabridge.runtimes import RuntimeSessionTelemetry, RuntimeStreamEvent
 
 
 class FakeRuntimeSession:

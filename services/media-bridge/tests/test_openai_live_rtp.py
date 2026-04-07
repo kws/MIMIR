@@ -7,11 +7,11 @@ import uuid
 
 import pytest
 
-from app.backends import BackendRouter
-from app.controller_contract import CallParticipant, CreateMediaSessionRequest, MediaSessionConfig, MediaSettings, RtpFlow
-from app.live_rtp import LiveRtpHooks
-from app.rtp import parse_rtp_packet
-from app.runtimes import OPENAI_RUNTIME, RuntimeSessionTelemetry
+from mimir.mediabridge.backends import BackendRouter
+from mimir.mediabridge.controller_contract import CallParticipant, CreateMediaSessionRequest, MediaSessionConfig, MediaSettings, RtpFlow
+from mimir.mediabridge.live_rtp import LiveRtpHooks
+from mimir.mediabridge.rtp import parse_rtp_packet
+from mimir.mediabridge.runtimes import OPENAI_RUNTIME, RuntimeSessionTelemetry
 
 
 pytestmark = pytest.mark.skipif(
