@@ -93,18 +93,37 @@ The repository is now explicitly organized around a provider-agnostic boundary:
 - The media bridge now exposes session creation, live RTP activation, termination, telemetry, and SSE media lifecycle events.
 - The media bridge can now verify live model runtimes with prerecorded WAV fixtures against OpenAI Realtime and Gemini Live.
 - The media bridge now supports live bidirectional RTP bridging for `g711_ulaw` against OpenAI Realtime, with bridge RTP allocation returned in media-session responses.
-- A PBX fixture is included in the default stack for simple local testing, but it is not yet wired into the orchestrator as a real adapter.
-- SIP signaling, SDP negotiation, and provider-specific edge adapters still remain future work.
+- A PBX fixture is included in the default stack for simple local testing, with an ARI edge-adapter path that routes calls through the orchestrator.
+- Generic SIP registration, SDP negotiation, Twilio, and hosted-provider adapters still remain future work.
+
+## ARI Orchestrator Adapter
+
+The compose stack starts an `ari-adapter` container for the Asterisk ARI path. It keeps call policy, persona selection, and media attach timing in the orchestrator.
+
+To run the adapter manually outside compose, use:
+
+```bash
+uv run --with httpx --with websockets python services/pbx/scripts/ari_orchestrator_adapter.py
+```
+
+With the adapter running, place a call to extension `3001`-`3006` on the PBX fixture. Those adapter extensions map to scientist profiles `2001`-`2006` and route the call into the orchestrator. If `ALLOWED_ADAPTERS` is set, include `asterisk-ari`.
+
+The orchestrator:
+
+- accepts the normalized inbound call
+- resolves the persona and creates the media bridge session
+- defers media start until the ARI adapter has created the Asterisk `ExternalMedia` channel
+- attaches the late-bound Asterisk RTP endpoint through `POST /v1/calls/{call_id}/media/attach`
 
 ## RTP Verification
 
-The compose stack now exposes an Asterisk `ExternalMedia` verifier path over ARI:
+The compose stack still exposes a lower-level Asterisk `ExternalMedia` verifier path over ARI:
 
 ```bash
 uv run --with httpx --with websockets python services/pbx/scripts/verify_rtp_bridge.py
 ```
 
-Then place a call to extension `3001`-`3006` on the PBX fixture. Those verifier extensions map to scientist profiles `2001`-`2006` and route the call into the ARI verifier, which:
+Then place a call to extension `3201`-`3206` on the PBX fixture. Those verifier extensions map to scientist profiles `2001`-`2006` and route the call into the direct ARI verifier, which:
 
 - allocates a live RTP session from the media bridge
 - creates an Asterisk `ExternalMedia` channel using standard RTP/UDP

@@ -7,6 +7,24 @@ services:
       - "8088:8088"
       - "10000-10099:10000-10099/udp"
 
+  ari-adapter:
+    build:
+      context: ./pbx
+      dockerfile: Dockerfile.ari-adapter
+    command:
+      - python
+      - ari_orchestrator_adapter.py
+      - --ari-base-url
+      - http://pbx-fixture:8088/ari
+      - --ari-ws-url
+      - ws://pbx-fixture:8088/ari/events
+      - --orchestrator-url
+      - http://orchestrator:8080
+    depends_on:
+      - pbx-fixture
+      - orchestrator
+    restart: unless-stopped
+
   media-bridge:
     build:
       context: ./media-bridge

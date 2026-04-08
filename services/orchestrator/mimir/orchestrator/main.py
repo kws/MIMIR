@@ -8,7 +8,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse
@@ -61,6 +61,11 @@ class RtpFlow(BaseModel):
     remote_port: int
 
 
+class RemoteRtpEndpoint(BaseModel):
+    address: str
+    port: int = Field(ge=1, le=65535)
+
+
 class InboundCallRequest(BaseModel):
     call_id: str = Field(default_factory=lambda: f"call-{uuid.uuid4()}")
     direction: str = "inbound"
@@ -68,10 +73,15 @@ class InboundCallRequest(BaseModel):
     participant: CallParticipant
     metadata: dict[str, str] = Field(default_factory=dict)
     rtp: RtpFlow
+    media_start_mode: Literal["immediate", "deferred"] = "immediate"
 
 
 class HangupPayload(BaseModel):
     reason: str = "normal_clearing"
+
+
+class AttachMediaRequest(BaseModel):
+    remote_rtp: RemoteRtpEndpoint | None = None
 
 
 class AIProfileMappingRequest(BaseModel):
@@ -227,6 +237,30 @@ async def _publish_event(call_id: str, event_type: str, attributes: dict[str, An
     return payload
 
 
+def _attach_media_body(request: AttachMediaRequest) -> dict[str, Any] | None:
+    if request.remote_rtp is None:
+        return None
+    return {"remote_rtp": request.remote_rtp.model_dump()}
+
+
+async def _attach_media_for_call(
+    call_id: str,
+    session_id: str,
+    *,
+    idempotency_key: str,
+    request: AttachMediaRequest,
+) -> dict[str, Any]:
+    started = await media_client.attach_media(session_id, idempotency_key=f"attach-{idempotency_key}", body=_attach_media_body(request))
+    await _update_projection(call_id, {"bridge_rtp": started.get("rtp"), "media_status": started.get("status")})
+    _structured_log(
+        "media_session_attached",
+        call_id=call_id,
+        bridge_session_id=session_id,
+        media_status=started["status"],
+    )
+    return started
+
+
 @app.on_event("startup")
 async def startup() -> None:
     asyncio.create_task(_consume_media_events())
@@ -335,6 +369,7 @@ async def create_inbound_call(request: InboundCallRequest, idempotency_key: str 
                 "adapter": request.adapter.model_dump(),
                 "metadata": request.metadata,
                 "rtp": request.rtp.model_dump(),
+                "media_start_mode": request.media_start_mode,
                 "call_log_required": True,
             }
         },
@@ -375,16 +410,48 @@ async def create_inbound_call(request: InboundCallRequest, idempotency_key: str 
         },
     )
 
-    started = await media_client.attach_media(media["session_id"], idempotency_key=f"attach-{idempotency_key}")
-    await _update_projection(request.call_id, {"bridge_rtp": started.get("rtp", media.get("rtp"))})
-    _structured_log(
-        "media_session_attached",
-        call_id=request.call_id,
-        bridge_session_id=media["session_id"],
-        media_status=started["status"],
-    )
+    if request.media_start_mode == "deferred":
+        _structured_log(
+            "media_session_attach_deferred",
+            call_id=request.call_id,
+            bridge_session_id=media["session_id"],
+            media_status=media["status"],
+        )
+        projection = await datastore.load_call_projection(request.call_id)
+        return {"call_id": request.call_id, "action": "accept", **(projection or {})}
+
+    await _attach_media_for_call(request.call_id, media["session_id"], idempotency_key=idempotency_key, request=AttachMediaRequest())
     projection = await datastore.load_call_projection(request.call_id)
     return {"call_id": request.call_id, "action": "accept", **(projection or {})}
+
+
+@app.post("/v1/calls/{call_id}/media/attach")
+async def attach_call_media(
+    call_id: str,
+    request: AttachMediaRequest,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    projection = await datastore.load_call_projection(call_id)
+    if not projection:
+        raise HTTPException(status_code=404, detail="call not found")
+
+    session_id = projection.get("media_session_id")
+    if not session_id:
+        raise HTTPException(status_code=409, detail="media session is not ready")
+
+    reserved, prior = await datastore.reserve_idempotency("attach", idempotency_key, {"call_id": call_id, "media_session_id": session_id})
+    if not reserved:
+        projection = await datastore.load_call_projection(call_id)
+        return {"idempotent_replay": True, **(projection or prior or {"call_id": call_id})}
+
+    await _publish_event(
+        call_id,
+        "call.media_attach_requested",
+        {"projection": {"adapter_remote_rtp": request.remote_rtp.model_dump() if request.remote_rtp else None}},
+    )
+    started = await _attach_media_for_call(call_id, session_id, idempotency_key=idempotency_key, request=request)
+    projection = await datastore.load_call_projection(call_id)
+    return {"call_id": call_id, "action": "attach", "media_status": started["status"], **(projection or {})}
 
 
 @app.post("/v1/calls/{call_id}/hangup")

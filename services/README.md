@@ -82,12 +82,14 @@ docker compose up --build
 ## Service endpoints
 
 - PBX fixture: `udp://localhost:5060`, `http://localhost:8088`, and `udp://localhost:10000-10099`
+- ARI adapter: compose service `ari-adapter`
 - Orchestrator: `http://localhost:8080`
 - Media Bridge: `http://localhost:8081` and `udp://localhost:12000-12099`
 
 ## Current orchestrator API
 
 - `POST /v1/calls/inbound` — accept a normalized inbound call from an edge adapter
+- `POST /v1/calls/{call_id}/media/attach` — attach late-bound adapter media through the orchestrator
 - `POST /v1/calls/{call_id}/hangup` — end a call
 - `GET /v1/calls/{call_id}` — inspect current call projection
 - `GET /v1/call-events` — stream orchestrator lifecycle events
@@ -107,6 +109,7 @@ Behavior notes:
 
 - `POST /v1/media/sessions` now returns the resolved bridge RTP endpoint in `MediaSession.rtp`.
 - `POST /v1/media/sessions/{session_id}/start` accepts an optional `remote_rtp` override for late-bound RTP peers such as the Asterisk `ExternalMedia` verifier.
+- `POST /v1/calls/inbound` accepts `media_start_mode: "deferred"` so edge adapters can ask the orchestrator to create the media session first, then attach RTP later through `POST /v1/calls/{call_id}/media/attach`.
 - Live RTP support is currently limited to bidirectional `g711_ulaw` over UDP with the OpenAI Realtime runtime.
 
 ## AI profile defaults
@@ -131,11 +134,10 @@ Each persona file uses simple `key: value` front matter, followed by a `---` sep
 The current Python stack does not yet include:
 
 - a SIP registration stack
-- an Asterisk adapter
 - a Twilio adapter
 - NAT traversal logic at the edge layer
 
-The bridge now supports live RTP call bridging for OpenAI Realtime and still supports fixture-based runtime verification against OpenAI Realtime and Gemini Live. SIP/session negotiation concerns are still expected to arrive as adapter and RTP/media-edge work, not as hidden behavior inside the orchestrator.
+The bridge now supports live RTP call bridging for OpenAI Realtime and still supports fixture-based runtime verification against OpenAI Realtime and Gemini Live. The PBX fixture has a local ARI adapter path, but generic SIP/session negotiation concerns are still expected to arrive as adapter and RTP/media-edge work, not as hidden behavior inside the orchestrator.
 
 ## PBX fixture
 
@@ -144,8 +146,18 @@ The bridge now supports live RTP call bridging for OpenAI Realtime and still sup
 Important:
 
 - It is a fixture, not the architecture center.
-- It is not yet wired into the orchestrator as a real provider adapter.
+- It includes an ARI adapter path into the orchestrator for local call-control testing.
 - Hosted-provider support should still be designed through the same normalized adapter boundary.
+
+### ARI orchestrator adapter
+
+Compose starts the ARI adapter as the `ari-adapter` service. To run it manually from the repository root instead, use:
+
+```bash
+uv run --with httpx --with websockets python services/pbx/scripts/ari_orchestrator_adapter.py
+```
+
+With the adapter running, place a call to `3001`-`3006` on the PBX fixture. The dialplan sends the call into ARI `Stasis`, the adapter posts a normalized inbound call to the orchestrator with deferred media start, creates an Asterisk `ExternalMedia` channel, and then late-binds the resulting Asterisk RTP endpoint through `POST /v1/calls/{call_id}/media/attach`. If `ALLOWED_ADAPTERS` is set, include `asterisk-ari`.
 
 ### ExternalMedia verifier
 
@@ -155,4 +167,4 @@ Run the verifier from the repository root:
 uv run --with httpx --with websockets python services/pbx/scripts/verify_rtp_bridge.py
 ```
 
-Then place a call to `3001`-`3006` on the PBX fixture. The dialplan sends the call into ARI `Stasis`, creates an `ExternalMedia` RTP channel, and late-binds the resulting Asterisk RTP endpoint into the media bridge.
+Then place a call to `3201`-`3206` on the PBX fixture. The dialplan sends the call into ARI `Stasis`, creates an `ExternalMedia` RTP channel, and late-binds the resulting Asterisk RTP endpoint into the media bridge.
