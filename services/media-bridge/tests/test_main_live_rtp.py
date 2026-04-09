@@ -3,10 +3,9 @@ from __future__ import annotations
 import asyncio
 import socket
 
+import mimir.mediabridge.main as media_main
 import pytest
 from httpx import ASGITransport, AsyncClient
-
-import mimir.mediabridge.main as media_main
 from mimir.mediabridge.audio import PcmAudio
 from mimir.mediabridge.rtp import G711_ULAW_PAYLOAD_BYTES, RTP_PAYLOAD_TYPE_PCMU, RtpPacket, build_rtp_packet, parse_rtp_packet
 from mimir.mediabridge.runtimes import OPENAI_RUNTIME, RuntimeRunResult, RuntimeSessionTelemetry, RuntimeStreamEvent
@@ -17,12 +16,24 @@ class FakeRuntimeSession:
         self.input_audio: asyncio.Queue[PcmAudio] = asyncio.Queue()
         self.output_events: asyncio.Queue[RuntimeStreamEvent | None] = asyncio.Queue()
         self.greeting_requests = 0
+        self.interrupts = 0
+        self.instruction_updates: list[str] = []
+        self.response_requests: list[str | None] = []
 
     async def send_audio(self, audio_input: PcmAudio) -> None:
         await self.input_audio.put(audio_input)
 
     async def request_greeting(self) -> None:
         self.greeting_requests += 1
+
+    async def interrupt(self) -> None:
+        self.interrupts += 1
+
+    async def append_instructions(self, text: str) -> None:
+        self.instruction_updates.append(text)
+
+    async def request_response(self, prompt: str | None = None) -> None:
+        self.response_requests.append(prompt)
 
     async def receive_event(self) -> RuntimeStreamEvent | None:
         return await self.output_events.get()
@@ -137,6 +148,75 @@ async def test_media_session_create_start_and_stop_exposes_resolved_rtp(monkeypa
             )
             assert stop_response.status_code == 200
             assert stop_response.json()["status"] == "terminated"
+    finally:
+        backend.runtime = original_runtime
+        remote_sock.close()
+
+
+@pytest.mark.asyncio
+async def test_media_session_conversation_command_endpoint_applies_live_commands() -> None:
+    backend = media_main.backend_router._backends[OPENAI_RUNTIME]
+    fake_runtime = FakeLiveRuntime()
+    original_runtime = backend.runtime
+    backend.runtime = fake_runtime
+    media_main._sessions.clear()
+    media_main._idempotency.clear()
+
+    remote_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    remote_sock.bind(("127.0.0.1", 0))
+    remote_sock.setblocking(False)
+
+    try:
+        async with AsyncClient(transport=ASGITransport(app=media_main.app), base_url="http://testserver") as client:
+            create_response = await client.post(
+                "/v1/media/sessions",
+                json={
+                    "call_id": "call-commands",
+                    "direction": "inbound",
+                    "participant": {"caller": "1000", "callee": "2001", "called_extension": "2001"},
+                    "ai_profile": {
+                        "model_name": "gpt-realtime-mini",
+                        "voice": "verse",
+                        "instructions": "Be helpful.",
+                        "greeting": "Hello from the bridge.",
+                        "vad_mode": "server_vad",
+                    },
+                    "media_settings": {"input_codec": "g711_ulaw", "output_codec": "g711_ulaw", "sample_rate_hz": 8000},
+                    "rtp": {"local_address": "127.0.0.1", "local_port": 0, "remote_address": "", "remote_port": 0},
+                    "metadata": {},
+                },
+            )
+            created = create_response.json()
+
+            start_response = await client.post(
+                f"/v1/media/sessions/{created['session_id']}/start",
+                headers={"Idempotency-Key": "start-commands"},
+                json={"remote_rtp": {"address": "127.0.0.1", "port": remote_sock.getsockname()[1]}},
+            )
+            assert start_response.status_code == 200
+
+            append_response = await client.post(
+                f"/v1/media/sessions/{created['session_id']}/conversation/commands",
+                json={"command": "append_instructions", "text": "Be concise."},
+            )
+            request_response = await client.post(
+                f"/v1/media/sessions/{created['session_id']}/conversation/commands",
+                json={"command": "request_response", "prompt": "Summarize the last point."},
+            )
+            interrupt_response = await client.post(
+                f"/v1/media/sessions/{created['session_id']}/conversation/commands",
+                json={"command": "interrupt"},
+            )
+
+            assert append_response.status_code == 200
+            assert append_response.json()["instruction_override_text"] == "Be concise."
+            assert request_response.status_code == 200
+            assert request_response.json()["command"] == "request_response"
+            assert interrupt_response.status_code == 200
+            assert fake_runtime.last_session is not None
+            assert fake_runtime.last_session.instruction_updates == ["Be concise."]
+            assert fake_runtime.last_session.response_requests == ["Summarize the last point."]
+            assert fake_runtime.last_session.interrupts == 1
     finally:
         backend.runtime = original_runtime
         remote_sock.close()

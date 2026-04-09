@@ -64,6 +64,19 @@ class StartMediaSessionRequest(BaseModel):
     remote_rtp: RemoteRtpEndpoint | None = None
 
 
+class ConversationCommandRequest(BaseModel):
+    command: Literal["interrupt", "append_instructions", "request_response"]
+    text: str | None = None
+    prompt: str | None = None
+
+
+class ConversationCommandResponse(BaseModel):
+    session_id: str
+    command: str
+    status: Literal["applied"] = "applied"
+    instruction_override_text: str | None = None
+
+
 class StopMediaSessionRequest(BaseModel):
     reason: str = "normal_clearing"
 

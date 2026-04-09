@@ -37,6 +37,15 @@ class MediaBridgeClient:
             response.raise_for_status()
             return response.json()
 
+    async def send_conversation_command(self, session_id: str, payload: dict) -> dict:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(
+                f"{self.base_url}/v1/media/sessions/{session_id}/conversation/commands",
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def stream_media_events(self) -> AsyncIterator[dict]:
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream("GET", f"{self.base_url}/v1/media/events") as response:

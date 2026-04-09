@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: MIMIR Media Bridge Control API
-  version: 2.3.0
+  version: 2.4.0
   description: |
     Versioned HTTP contract between the orchestrator and the media bridge.
     This contract documents the provider-agnostic media API implemented in this repository today.
@@ -9,7 +9,7 @@ info:
     Scope notes:
       - Inbound media only.
       - Session lifecycle operations are keyed by media session ID.
-      - Media lifecycle events are delivered over server-sent events (SSE).
+      - Media lifecycle and normalized conversation events are delivered over server-sent events (SSE).
 servers:
   - url: http://media-bridge:8081
 paths:
@@ -112,9 +112,36 @@ paths:
                 $ref: '#/components/schemas/AcceptedResponse'
         '404':
           description: Session not found
+  /v1/media/sessions/{session_id}/conversation/commands:
+    post:
+      summary: Apply a light conversation steering command to an active live session
+      operationId: PostConversationCommand
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversationCommandRequest'
+      responses:
+        '200':
+          description: Command applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationCommandResponse'
+        '400':
+          description: Invalid command arguments
+        '404':
+          description: Session not found
+        '409':
+          description: Session is not live or command was rejected
+        '501':
+          description: Runtime does not support the requested command
   /v1/media/events:
     get:
-      summary: Stream media lifecycle events from the media bridge
+      summary: Stream media lifecycle and normalized conversation events from the media bridge
       operationId: StreamMediaEvents
       parameters:
         - in: query
@@ -136,6 +163,15 @@ paths:
             text/event-stream:
               schema:
                 type: string
+                description: |
+                  SSE `data:` frames carry JSON objects shaped like `MediaEventEnvelope`.
+                  Conversation transcript deltas are marked with `"transient": true`; completed turns,
+                  interruptions, and command lifecycle events are durable and use `"transient": false`.
+              examples:
+                conversationDelta:
+                  value: |
+                    event: conversation.user.transcript.delta
+                    data: {"event_id":"evt-123","event_type":"conversation.user.transcript.delta","media_session_id":"ms-123","bridge_session_id":"bridge-123","call_id":"call-123","occurred_at":"2026-04-09T09:00:00Z","attributes":{"runtime":"openai-realtime","speaker":"user","turn_id":"user-turn-1","turn_index":1,"delta":"hello"},"transient":true}
 components:
   parameters:
     SessionId:
@@ -239,12 +275,63 @@ components:
       properties:
         remote_rtp:
           $ref: '#/components/schemas/RemoteRtpEndpoint'
+    ConversationCommandRequest:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: string
+          enum: [interrupt, append_instructions, request_response]
+        text:
+          type: string
+          description: Required when `command` is `append_instructions`; ignored otherwise.
+        prompt:
+          type: string
+          description: Optional per-response prompt used only when `command` is `request_response`.
+    ConversationCommandResponse:
+      type: object
+      required: [session_id, command, status]
+      properties:
+        session_id:
+          type: string
+        command:
+          type: string
+        status:
+          type: string
+          enum: [applied]
+        instruction_override_text:
+          type: string
+          nullable: true
     StopMediaSessionRequest:
       type: object
       required: [reason]
       properties:
         reason:
           type: string
+    MediaEventEnvelope:
+      type: object
+      required: [event_id, event_type, media_session_id, bridge_session_id, call_id, occurred_at, attributes, transient]
+      properties:
+        event_id:
+          type: string
+        event_type:
+          type: string
+          description: Includes media lifecycle events plus additive `conversation.*` event types.
+        media_session_id:
+          type: string
+        bridge_session_id:
+          type: string
+        call_id:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        attributes:
+          type: object
+          additionalProperties: true
+        transient:
+          type: boolean
+          description: True for live-only transcript deltas, false for durable turn/lifecycle events.
     MediaSession:
       type: object
       required: [session_id, bridge_session_id, call_id, status, rtp]

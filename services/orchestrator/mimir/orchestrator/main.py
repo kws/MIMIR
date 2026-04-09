@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Literal
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
@@ -39,6 +40,7 @@ class CallEvent:
     event_type: str
     occurred_at: str
     attributes: dict[str, Any]
+    transient: bool = False
 
 
 class AdapterReference(BaseModel):
@@ -82,6 +84,12 @@ class HangupPayload(BaseModel):
 
 class AttachMediaRequest(BaseModel):
     remote_rtp: RemoteRtpEndpoint | None = None
+
+
+class ConversationCommandPayload(BaseModel):
+    command: Literal["interrupt", "append_instructions", "request_response"]
+    text: str | None = None
+    prompt: str | None = None
 
 
 class AIProfileMappingRequest(BaseModel):
@@ -211,13 +219,101 @@ async def _update_projection(call_id: str, updates: dict[str, Any]) -> dict[str,
     return current
 
 
+def _default_conversation_projection() -> dict[str, Any]:
+    return {
+        "status": "idle",
+        "latest_user_turn": None,
+        "latest_assistant_turn": None,
+        "instruction_override_text": "",
+        "turn_index": 0,
+    }
+
+
+def _conversation_turn_payload(attributes: dict[str, Any], occurred_at: str) -> dict[str, Any]:
+    return {
+        "turn_id": attributes.get("turn_id"),
+        "turn_index": attributes.get("turn_index"),
+        "speaker": attributes.get("speaker"),
+        "text": attributes.get("text"),
+        "occurred_at": occurred_at,
+    }
+
+
+def _conversation_projection_for_event(
+    current_projection: dict[str, Any],
+    event_type: str,
+    attributes: dict[str, Any],
+    occurred_at: str,
+) -> dict[str, Any]:
+    conversation = dict(current_projection.get("conversation") or _default_conversation_projection())
+    turn_index = attributes.get("turn_index")
+    if isinstance(turn_index, int):
+        conversation["turn_index"] = max(conversation.get("turn_index", 0), turn_index)
+
+    if event_type == "conversation.user.transcript.delta":
+        conversation["status"] = "listening"
+    elif event_type in {"conversation.assistant.turn.started", "conversation.assistant.transcript.delta"}:
+        conversation["status"] = "responding"
+    elif event_type == "conversation.user.turn.completed":
+        conversation["status"] = "idle"
+        conversation["latest_user_turn"] = _conversation_turn_payload(attributes, occurred_at)
+    elif event_type == "conversation.assistant.turn.completed":
+        conversation["status"] = "idle"
+        conversation["latest_assistant_turn"] = _conversation_turn_payload(attributes, occurred_at)
+    elif event_type == "conversation.interruption":
+        conversation["status"] = "interrupted"
+    elif event_type == "conversation.command.applied":
+        if attributes.get("command") == "append_instructions":
+            conversation["instruction_override_text"] = attributes.get("instruction_override_text", "")
+        if attributes.get("command") == "interrupt":
+            conversation["status"] = "interrupted"
+
+    return conversation
+
+
+def _projection_for_media_event(current_projection: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    event_type = payload.get("event_type", "media.unknown")
+    attributes = payload.get("attributes", {})
+    if event_type.startswith("conversation."):
+        return {
+            "conversation": _conversation_projection_for_event(
+                current_projection,
+                event_type,
+                attributes,
+                payload.get("occurred_at", now_iso()),
+            )
+        }
+
+    projection = dict(attributes)
+    if payload.get("media_session_id"):
+        projection.setdefault("media_session_id", payload["media_session_id"])
+    if payload.get("bridge_session_id"):
+        projection.setdefault("bridge_session_id", payload["bridge_session_id"])
+    return projection
+
+
 async def _publish_event(call_id: str, event_type: str, attributes: dict[str, Any]) -> dict[str, Any]:
+    return await _dispatch_event(call_id, event_type, attributes, transient=False)
+
+
+async def _publish_transient_event(call_id: str, event_type: str, attributes: dict[str, Any]) -> dict[str, Any]:
+    return await _dispatch_event(call_id, event_type, attributes, transient=True)
+
+
+async def _dispatch_event(
+    call_id: str,
+    event_type: str,
+    attributes: dict[str, Any],
+    *,
+    transient: bool,
+) -> dict[str, Any]:
     event = CallEvent(
         event_id=f"evt-{uuid.uuid4()}",
         call_id=call_id,
         event_type=event_type,
         occurred_at=now_iso(),
         attributes=attributes,
+        transient=transient,
     )
     payload = {
         "event_id": event.event_id,
@@ -225,14 +321,21 @@ async def _publish_event(call_id: str, event_type: str, attributes: dict[str, An
         "event_type": event.event_type,
         "occurred_at": event.occurred_at,
         "attributes": event.attributes,
+        "transient": event.transient,
     }
-    await datastore.append_call_event(call_id, payload)
-    current = await datastore.load_call_projection(call_id) or {"call_id": call_id}
-    all_events = await datastore.load_call_events(call_id)
-    current["state"] = _reduce_state(all_events).value
-    current["updated_at"] = event.occurred_at
-    current.update(attributes.get("projection", {}))
-    await datastore.save_call_projection(call_id, current)
+    if not transient:
+        await datastore.append_call_event(call_id, payload)
+        current = await datastore.load_call_projection(call_id) or {"call_id": call_id}
+        all_events = await datastore.load_call_events(call_id)
+        current["state"] = _reduce_state(all_events).value
+        current["updated_at"] = event.occurred_at
+        current.update(attributes.get("projection", {}))
+        await datastore.save_call_projection(call_id, current)
+    elif attributes.get("projection"):
+        current = await datastore.load_call_projection(call_id) or {"call_id": call_id}
+        current["updated_at"] = event.occurred_at
+        current.update(attributes["projection"])
+        await datastore.save_call_projection(call_id, current)
     await event_bus.publish(payload)
     return payload
 
@@ -241,6 +344,24 @@ def _attach_media_body(request: AttachMediaRequest) -> dict[str, Any] | None:
     if request.remote_rtp is None:
         return None
     return {"remote_rtp": request.remote_rtp.model_dump()}
+
+
+def _validate_conversation_command(request: ConversationCommandPayload) -> None:
+    if request.command == "append_instructions" and not (request.text and request.text.strip()):
+        raise HTTPException(status_code=400, detail="append_instructions requires non-empty text")
+    if request.command != "append_instructions" and request.text is not None:
+        raise HTTPException(status_code=400, detail="text is only valid for append_instructions")
+    if request.command != "request_response" and request.prompt is not None:
+        raise HTTPException(status_code=400, detail="prompt is only valid for request_response")
+
+
+def _conversation_command_body(request: ConversationCommandPayload) -> dict[str, Any]:
+    body = {"command": request.command}
+    if request.text is not None:
+        body["text"] = request.text
+    if request.prompt is not None:
+        body["prompt"] = request.prompt
+    return body
 
 
 async def _attach_media_for_call(
@@ -269,42 +390,49 @@ async def startup() -> None:
 async def _consume_media_events() -> None:
     async for event in media_client.stream_media_events():
         payload = json.loads(event["payload"])
-        call_id = payload.get("call_id")
-        if not call_id:
-            continue
+        await _handle_media_event_payload(payload)
 
-        event_type = payload.get("event_type", "media.unknown")
-        bridge_session_id = payload.get("bridge_session_id")
-        attributes = payload.get("attributes", {})
-        runtime = attributes.get("runtime", "python")
-        reconnects = int(attributes.get("ws_reconnects", 0) or 0)
-        ws_errors = int(attributes.get("ws_errors", 0) or 0)
 
-        if reconnects:
-            MEDIA_WS_RECONNECT_TOTAL.labels(runtime=runtime).inc(reconnects)
-        if ws_errors:
-            MEDIA_WS_ERROR_TOTAL.labels(runtime=runtime).inc(ws_errors)
+async def _handle_media_event_payload(payload: dict[str, Any]) -> None:
+    call_id = payload.get("call_id")
+    if not call_id:
+        return
 
-        if event_type == "media.session.active":
-            started_at = CALL_STARTED_AT.get(call_id)
-            if started_at is not None:
-                INBOUND_TO_ACTIVE_LATENCY_SECONDS.observe(time.perf_counter() - started_at)
-        elif event_type == "media.first_audio":
-            started_at = CALL_STARTED_AT.get(call_id)
-            if started_at is not None:
-                FIRST_AUDIO_LATENCY_SECONDS.observe(time.perf_counter() - started_at)
-        elif event_type == "media.session.ended":
-            CALL_COMPLETION_TOTAL.labels(result="ended", reason=attributes.get("reason", "normal_clearing")).inc()
-            CALL_STARTED_AT.pop(call_id, None)
+    event_type = payload.get("event_type", "media.unknown")
+    bridge_session_id = payload.get("bridge_session_id")
+    attributes = payload.get("attributes", {})
+    runtime = attributes.get("runtime", "python")
+    reconnects = int(attributes.get("ws_reconnects", 0) or 0)
+    ws_errors = int(attributes.get("ws_errors", 0) or 0)
 
-        projection = dict(attributes)
-        if payload.get("media_session_id"):
-            projection.setdefault("media_session_id", payload["media_session_id"])
-        if bridge_session_id:
-            projection.setdefault("bridge_session_id", bridge_session_id)
+    if reconnects:
+        MEDIA_WS_RECONNECT_TOTAL.labels(runtime=runtime).inc(reconnects)
+    if ws_errors:
+        MEDIA_WS_ERROR_TOTAL.labels(runtime=runtime).inc(ws_errors)
 
-        _structured_log("media_event_received", call_id=call_id, bridge_session_id=bridge_session_id, event_type=event_type)
-        await _publish_event(call_id, event_type, {"projection": projection})
+    if event_type == "media.session.active":
+        started_at = CALL_STARTED_AT.get(call_id)
+        if started_at is not None:
+            INBOUND_TO_ACTIVE_LATENCY_SECONDS.observe(time.perf_counter() - started_at)
+    elif event_type == "media.first_audio":
+        started_at = CALL_STARTED_AT.get(call_id)
+        if started_at is not None:
+            FIRST_AUDIO_LATENCY_SECONDS.observe(time.perf_counter() - started_at)
+    elif event_type == "media.session.ended":
+        CALL_COMPLETION_TOTAL.labels(result="ended", reason=attributes.get("reason", "normal_clearing")).inc()
+        CALL_STARTED_AT.pop(call_id, None)
+
+    current_projection = await datastore.load_call_projection(call_id) or {"call_id": call_id}
+    projection = _projection_for_media_event(current_projection, payload)
+    event_attributes = dict(attributes)
+    if projection:
+        event_attributes["projection"] = projection
+
+    _structured_log("media_event_received", call_id=call_id, bridge_session_id=bridge_session_id, event_type=event_type)
+    if payload.get("transient"):
+        await _publish_transient_event(call_id, event_type, event_attributes)
+    else:
+        await _publish_event(call_id, event_type, event_attributes)
 
 
 @app.post("/v1/calls/inbound")
@@ -371,6 +499,7 @@ async def create_inbound_call(request: InboundCallRequest, idempotency_key: str 
                 "rtp": request.rtp.model_dump(),
                 "media_start_mode": request.media_start_mode,
                 "call_log_required": True,
+                "conversation": _default_conversation_projection(),
             }
         },
     )
@@ -452,6 +581,42 @@ async def attach_call_media(
     started = await _attach_media_for_call(call_id, session_id, idempotency_key=idempotency_key, request=request)
     projection = await datastore.load_call_projection(call_id)
     return {"call_id": call_id, "action": "attach", "media_status": started["status"], **(projection or {})}
+
+
+@app.post("/v1/calls/{call_id}/conversation/commands")
+async def command_call_conversation(
+    call_id: str,
+    request: ConversationCommandPayload,
+) -> dict[str, Any]:
+    projection = await datastore.load_call_projection(call_id)
+    if not projection:
+        raise HTTPException(status_code=404, detail="call not found")
+
+    _validate_conversation_command(request)
+
+    session_id = projection.get("media_session_id")
+    if not session_id:
+        raise HTTPException(status_code=409, detail="media session is not ready")
+
+    try:
+        command_response = await media_client.send_conversation_command(session_id, _conversation_command_body(request))
+    except httpx.HTTPStatusError as exc:
+        detail: Any
+        try:
+            detail = exc.response.json()
+        except ValueError:
+            detail = exc.response.text
+        raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+    refreshed_projection = await datastore.load_call_projection(call_id)
+    return {
+        "call_id": call_id,
+        "media_session_id": session_id,
+        "command": command_response.get("command", request.command),
+        "status": command_response.get("status", "applied"),
+        "instruction_override_text": command_response.get("instruction_override_text"),
+        "conversation": (refreshed_projection or projection).get("conversation"),
+    }
 
 
 @app.post("/v1/calls/{call_id}/hangup")

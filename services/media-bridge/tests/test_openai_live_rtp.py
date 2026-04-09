@@ -6,13 +6,11 @@ import socket
 import uuid
 
 import pytest
-
 from mimir.mediabridge.backends import BackendRouter
 from mimir.mediabridge.controller_contract import CallParticipant, CreateMediaSessionRequest, MediaSessionConfig, MediaSettings, RtpFlow
 from mimir.mediabridge.live_rtp import LiveRtpHooks
 from mimir.mediabridge.rtp import parse_rtp_packet
-from mimir.mediabridge.runtimes import OPENAI_RUNTIME, RuntimeSessionTelemetry
-
+from mimir.mediabridge.runtimes import OPENAI_RUNTIME
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY") or os.getenv("RUN_LIVE_OPENAI_RTP_TEST") != "1",
@@ -61,6 +59,7 @@ async def test_openai_runtime_can_emit_greeting_over_live_rtp() -> None:
             hooks=LiveRtpHooks(
                 on_first_audio=lambda value: _append_value(first_audio, value),
                 on_telemetry=lambda *_: _noop(),
+                on_conversation_event=lambda *_: _noop(),
                 on_failure=lambda reason, *_: _raise_failure(reason),
             ),
         )

@@ -10,6 +10,7 @@ class FakeMediaBridgeClient:
         self.create_calls: list[dict] = []
         self.attach_calls: list[dict] = []
         self.terminate_calls: list[dict] = []
+        self.conversation_calls: list[dict] = []
 
     async def create_session(self, payload: dict) -> dict:
         self.create_calls.append(payload)
@@ -44,12 +45,22 @@ class FakeMediaBridgeClient:
         self.terminate_calls.append({"session_id": session_id, "reason": reason, "idempotency_key": idempotency_key})
         return {"session_id": session_id, "status": "terminated", "reason": reason}
 
+    async def send_conversation_command(self, session_id: str, payload: dict) -> dict:
+        self.conversation_calls.append({"session_id": session_id, "payload": payload})
+        return {
+            "session_id": session_id,
+            "command": payload["command"],
+            "status": "applied",
+            "instruction_override_text": payload.get("text"),
+        }
+
 
 @pytest.fixture
 def orchestrator_state(monkeypatch: pytest.MonkeyPatch) -> FakeMediaBridgeClient:
     fake_media_client = FakeMediaBridgeClient()
     monkeypatch.setattr(orchestrator_main, "datastore", InMemoryDatastore())
     monkeypatch.setattr(orchestrator_main, "media_client", fake_media_client)
+    monkeypatch.setattr(orchestrator_main, "event_bus", orchestrator_main.EventBus())
     orchestrator_main.CALL_STARTED_AT.clear()
     return fake_media_client
 
@@ -100,3 +111,98 @@ async def test_attach_call_media_late_binds_adapter_rtp(orchestrator_state: Fake
             "body": {"remote_rtp": {"address": "10.0.0.20", "port": 18000}},
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_conversation_command_is_forwarded_to_media_bridge(orchestrator_state: FakeMediaBridgeClient) -> None:
+    await orchestrator_main.create_inbound_call(_inbound_request(), idempotency_key="accept-ari-channel-1")
+
+    response = await orchestrator_main.command_call_conversation(
+        "call-ari-test",
+        orchestrator_main.ConversationCommandPayload(
+            command="append_instructions",
+            text="Be brief.",
+        ),
+    )
+
+    assert response["command"] == "append_instructions"
+    assert response["status"] == "applied"
+    assert orchestrator_state.conversation_calls == [
+        {
+            "session_id": "media-test",
+            "payload": {"command": "append_instructions", "text": "Be brief."},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_conversation_transient_events_are_not_persisted_but_update_projection(
+    orchestrator_state: FakeMediaBridgeClient,
+) -> None:
+    await orchestrator_main.create_inbound_call(_inbound_request(), idempotency_key="accept-ari-channel-1")
+    queue = orchestrator_main.event_bus.subscribe()
+
+    await orchestrator_main._handle_media_event_payload(
+        {
+            "event_id": "evt-transient",
+            "event_type": "conversation.user.transcript.delta",
+            "call_id": "call-ari-test",
+            "bridge_session_id": "media-test",
+            "media_session_id": "media-test",
+            "occurred_at": "2026-04-09T10:00:00Z",
+            "transient": True,
+            "attributes": {
+                "runtime": "openai-realtime",
+                "speaker": "user",
+                "turn_id": "user-turn-1",
+                "turn_index": 1,
+                "delta": "Hello ",
+            },
+        }
+    )
+
+    event = await queue.get()
+    projection = await orchestrator_main.datastore.load_call_projection("call-ari-test")
+    events = await orchestrator_main.datastore.load_call_events("call-ari-test")
+    orchestrator_main.event_bus.unsubscribe(queue)
+
+    assert event["event_type"] == "conversation.user.transcript.delta"
+    assert event["transient"] is True
+    assert projection is not None
+    assert projection["conversation"]["status"] == "listening"
+    assert projection["conversation"]["turn_index"] == 1
+    assert all(stored["event_type"] != "conversation.user.transcript.delta" for stored in events)
+
+
+@pytest.mark.asyncio
+async def test_conversation_completed_turns_are_persisted_and_update_projection(
+    orchestrator_state: FakeMediaBridgeClient,
+) -> None:
+    await orchestrator_main.create_inbound_call(_inbound_request(), idempotency_key="accept-ari-channel-1")
+
+    await orchestrator_main._handle_media_event_payload(
+        {
+            "event_id": "evt-turn",
+            "event_type": "conversation.assistant.turn.completed",
+            "call_id": "call-ari-test",
+            "bridge_session_id": "media-test",
+            "media_session_id": "media-test",
+            "occurred_at": "2026-04-09T10:00:01Z",
+            "transient": False,
+            "attributes": {
+                "runtime": "openai-realtime",
+                "speaker": "assistant",
+                "turn_id": "assistant-turn-2",
+                "turn_index": 2,
+                "text": "Hello from MIMIR.",
+            },
+        }
+    )
+
+    projection = await orchestrator_main.datastore.load_call_projection("call-ari-test")
+    events = await orchestrator_main.datastore.load_call_events("call-ari-test")
+
+    assert projection is not None
+    assert projection["conversation"]["status"] == "idle"
+    assert projection["conversation"]["latest_assistant_turn"]["text"] == "Hello from MIMIR."
+    assert any(stored["event_type"] == "conversation.assistant.turn.completed" for stored in events)

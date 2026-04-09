@@ -9,7 +9,7 @@ import "google/protobuf/timestamp.proto";
 // Scope notes:
 // - Inbound media only.
 // - Session lifecycle operations are keyed by session_id.
-// - Event streaming is exposed as a single media lifecycle stream.
+// - Event streaming is exposed as a single media and normalized conversation stream.
 
 message CallParticipant {
   string caller = 1;
@@ -84,6 +84,20 @@ message PostSessionTelemetryRequest {
   TelemetryPayload telemetry = 2;
 }
 
+message ConversationCommandRequest {
+  string session_id = 1;
+  string command = 2;
+  string text = 3;
+  string prompt = 4;
+}
+
+message ConversationCommandResponse {
+  string session_id = 1;
+  string command = 2;
+  string status = 3;
+  string instruction_override_text = 4;
+}
+
 message AcceptedResponse {
   string status = 1;
 }
@@ -112,6 +126,7 @@ message MediaLifecycleEvent {
   string call_id = 5;
   google.protobuf.Timestamp occurred_at = 6;
   google.protobuf.Struct attributes = 7;
+  bool transient = 8;
 }
 
 message MediaEventSubscription {
@@ -125,5 +140,6 @@ service MediaControlService {
   rpc StopMediaSession(StopMediaSessionRequest) returns (MediaSession);
   rpc GetMediaSession(GetMediaSessionRequest) returns (MediaSession);
   rpc PostSessionTelemetry(PostSessionTelemetryRequest) returns (AcceptedResponse);
+  rpc PostConversationCommand(ConversationCommandRequest) returns (ConversationCommandResponse);
   rpc StreamMediaEvents(MediaEventSubscription) returns (stream MediaLifecycleEvent);
 }

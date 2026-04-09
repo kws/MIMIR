@@ -13,7 +13,15 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from pydantic import BaseModel, Field
 
 from .backends import BackendRouter, BackendSession, FixtureRunSummary
-from .controller_contract import CreateMediaSessionRequest, MediaSession, StartMediaSessionRequest, StopMediaSessionRequest
+from .controller_contract import (
+    BridgeSessionStatus,
+    ConversationCommandRequest,
+    ConversationCommandResponse,
+    CreateMediaSessionRequest,
+    MediaSession,
+    StartMediaSessionRequest,
+    StopMediaSessionRequest,
+)
 from .live_rtp import LiveRtpHooks
 from .rtp import RtpInboundTelemetryTracker
 from .runtimes import RuntimeConfigurationError, RuntimeSessionTelemetry
@@ -94,6 +102,38 @@ RTP_JITTER_MS = Histogram(
     labelnames=("runtime",),
     buckets=(1, 2, 5, 10, 20, 30, 50, 75, 100, 200),
 )
+RTP_MISSING_TOTAL = Counter(
+    "media_bridge_rtp_missing_packets_total",
+    "Count of missing inbound RTP packets after jitter-buffer reordering.",
+    labelnames=("runtime",),
+)
+RTP_DUPLICATE_TOTAL = Counter(
+    "media_bridge_rtp_duplicate_packets_total",
+    "Count of duplicate inbound RTP packets.",
+    labelnames=("runtime",),
+)
+RTP_LATE_TOTAL = Counter(
+    "media_bridge_rtp_late_packets_total",
+    "Count of late inbound RTP packets that arrived after playout advanced.",
+    labelnames=("runtime",),
+)
+RTP_OUT_OF_ORDER_TOTAL = Counter(
+    "media_bridge_rtp_out_of_order_packets_total",
+    "Count of inbound RTP packets buffered ahead of the expected sequence.",
+    labelnames=("runtime",),
+)
+RTP_JITTER_BUFFER_DEPTH = Histogram(
+    "media_bridge_rtp_jitter_buffer_depth_packets",
+    "Maximum inbound jitter-buffer depth observed for a session.",
+    labelnames=("runtime",),
+    buckets=(0, 1, 2, 3, 4, 6, 8, 12),
+)
+RTP_SENDER_LAG_MS = Histogram(
+    "media_bridge_rtp_sender_lag_ms",
+    "Maximum observed outbound RTP sender lag per session in milliseconds.",
+    labelnames=("runtime",),
+    buckets=(0, 1, 2, 5, 10, 20, 40, 80, 160),
+)
 WS_RECONNECT_TOTAL = Counter(
     "media_bridge_websocket_reconnect_total",
     "Count of websocket reconnect attempts in media runtime.",
@@ -132,7 +172,13 @@ def _to_media_session(record: BackendSession) -> MediaSession:
     )
 
 
-async def _emit_event(event_type: str, record: BackendSession, attributes: dict[str, Any] | None = None) -> None:
+async def _emit_event(
+    event_type: str,
+    record: BackendSession,
+    attributes: dict[str, Any] | None = None,
+    *,
+    transient: bool = False,
+) -> None:
     await _event_bus.publish(
         {
             "event_id": str(uuid.uuid4()),
@@ -141,6 +187,7 @@ async def _emit_event(event_type: str, record: BackendSession, attributes: dict[
             "bridge_session_id": record.session_id,
             "call_id": record.call_id,
             "occurred_at": _now(),
+            "transient": transient,
             "attributes": {"runtime": record.runtime, **(attributes or {})},
         }
     )
@@ -159,6 +206,16 @@ def _live_rtp_hooks(record: BackendSession) -> LiveRtpHooks:
             RTP_PACKET_LOSS_PCT.labels(runtime=record.runtime).observe(snapshot.packet_loss_pct)
         if snapshot.jitter_ms:
             RTP_JITTER_MS.labels(runtime=record.runtime).observe(snapshot.jitter_ms)
+        if snapshot.missing_packets:
+            RTP_MISSING_TOTAL.labels(runtime=record.runtime).inc(snapshot.missing_packets)
+        if snapshot.duplicate_packets:
+            RTP_DUPLICATE_TOTAL.labels(runtime=record.runtime).inc(snapshot.duplicate_packets)
+        if snapshot.late_packets:
+            RTP_LATE_TOTAL.labels(runtime=record.runtime).inc(snapshot.late_packets)
+        if snapshot.out_of_order_packets:
+            RTP_OUT_OF_ORDER_TOTAL.labels(runtime=record.runtime).inc(snapshot.out_of_order_packets)
+        RTP_JITTER_BUFFER_DEPTH.labels(runtime=record.runtime).observe(snapshot.max_buffered_packets)
+        RTP_SENDER_LAG_MS.labels(runtime=record.runtime).observe(snapshot.sender_lag_ms_max)
         if runtime_telemetry.ws_reconnects:
             WS_RECONNECT_TOTAL.labels(runtime=record.runtime).inc(runtime_telemetry.ws_reconnects)
         if runtime_telemetry.ws_errors:
@@ -172,12 +229,24 @@ def _live_rtp_hooks(record: BackendSession) -> LiveRtpHooks:
                 "jitter_ms": snapshot.jitter_ms,
                 "received_packets": snapshot.received_packets,
                 "invalid_packets": snapshot.invalid_packets,
+                "missing_packets": snapshot.missing_packets,
+                "duplicate_packets": snapshot.duplicate_packets,
+                "late_packets": snapshot.late_packets,
+                "out_of_order_packets": snapshot.out_of_order_packets,
+                "max_buffered_packets": snapshot.max_buffered_packets,
+                "sender_lag_ms_avg": snapshot.sender_lag_ms_avg,
+                "sender_lag_ms_max": snapshot.sender_lag_ms_max,
                 "ws_reconnects": runtime_telemetry.ws_reconnects,
                 "ws_errors": runtime_telemetry.ws_errors,
-                "first_audio_latency_ms": None if record.first_audio_at is None else round((record.first_audio_at - record.created_at.timestamp()) * 1000.0, 2),
+                "first_audio_latency_ms": None
+                if record.first_audio_at is None
+                else round((record.first_audio_at - record.created_at.timestamp()) * 1000.0, 2),
                 "vendor_session_id": runtime_telemetry.vendor_session_id,
             },
         )
+
+    async def on_conversation_event(event_type: str, attributes: dict[str, Any], transient: bool) -> None:
+        await _emit_event(event_type, record, attributes, transient=transient)
 
     async def on_failure(reason: str, tracker: RtpInboundTelemetryTracker, runtime_telemetry: RuntimeSessionTelemetry) -> None:
         if record.status == "terminated":
@@ -192,6 +261,11 @@ def _live_rtp_hooks(record: BackendSession) -> LiveRtpHooks:
                 "reason": reason,
                 "packet_loss_pct": tracker.snapshot().packet_loss_pct,
                 "jitter_ms": tracker.snapshot().jitter_ms,
+                "missing_packets": tracker.snapshot().missing_packets,
+                "duplicate_packets": tracker.snapshot().duplicate_packets,
+                "late_packets": tracker.snapshot().late_packets,
+                "out_of_order_packets": tracker.snapshot().out_of_order_packets,
+                "sender_lag_ms_max": tracker.snapshot().sender_lag_ms_max,
                 "ws_errors": runtime_telemetry.ws_errors,
                 "vendor_session_id": runtime_telemetry.vendor_session_id,
             },
@@ -200,6 +274,7 @@ def _live_rtp_hooks(record: BackendSession) -> LiveRtpHooks:
     return LiveRtpHooks(
         on_first_audio=on_first_audio,
         on_telemetry=on_telemetry,
+        on_conversation_event=on_conversation_event,
         on_failure=on_failure,
     )
 
@@ -431,6 +506,86 @@ async def post_session_telemetry(session_id: str, body: TelemetryPayload) -> dic
         },
     )
     return {"status": "accepted"}
+
+
+def _conversation_command_attributes(body: ConversationCommandRequest) -> dict[str, Any]:
+    attributes: dict[str, Any] = {"command": body.command}
+    if body.text is not None:
+        attributes["text"] = body.text
+    if body.prompt is not None:
+        attributes["prompt"] = body.prompt
+    return attributes
+
+
+def _validate_conversation_command(body: ConversationCommandRequest) -> None:
+    if body.command == "append_instructions" and not (body.text and body.text.strip()):
+        raise HTTPException(status_code=400, detail="append_instructions requires non-empty text")
+    if body.command != "append_instructions" and body.text is not None:
+        raise HTTPException(status_code=400, detail="text is only valid for append_instructions")
+    if body.command != "request_response" and body.prompt is not None:
+        raise HTTPException(status_code=400, detail="prompt is only valid for request_response")
+
+
+@app.post(
+    "/v1/media/sessions/{session_id}/conversation/commands",
+    response_model=ConversationCommandResponse,
+)
+async def post_conversation_command(
+    session_id: str,
+    body: ConversationCommandRequest,
+) -> ConversationCommandResponse:
+    record = _sessions.get(session_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="media session not found")
+
+    _validate_conversation_command(body)
+    await _emit_event("conversation.command.requested", record, _conversation_command_attributes(body))
+
+    if record.live_bridge is None or record.mode != "live" or record.status != BridgeSessionStatus.ACTIVE.value:
+        await _emit_event(
+            "conversation.command.failed",
+            record,
+            {**_conversation_command_attributes(body), "reason": "session_not_live"},
+        )
+        raise HTTPException(status_code=409, detail="conversation commands require an active live session")
+
+    try:
+        if body.command == "interrupt":
+            details = await record.live_bridge.interrupt()
+        elif body.command == "append_instructions":
+            details = await record.live_bridge.append_instructions(body.text or "")
+        else:
+            details = await record.live_bridge.request_response(body.prompt)
+    except NotImplementedError as exc:
+        await _emit_event(
+            "conversation.command.failed",
+            record,
+            {**_conversation_command_attributes(body), "reason": "command_not_supported"},
+        )
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except ValueError as exc:
+        await _emit_event(
+            "conversation.command.failed",
+            record,
+            {**_conversation_command_attributes(body), "reason": "invalid_command_arguments"},
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        await _emit_event(
+            "conversation.command.failed",
+            record,
+            {**_conversation_command_attributes(body), "reason": "command_rejected"},
+        )
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    attributes = {**_conversation_command_attributes(body), **details}
+    await _emit_event("conversation.command.applied", record, attributes)
+    return ConversationCommandResponse(
+        session_id=session_id,
+        command=body.command,
+        status="applied",
+        instruction_override_text=details.get("instruction_override_text"),
+    )
 
 
 @app.get("/v1/media/events")

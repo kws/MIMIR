@@ -68,12 +68,20 @@ class RuntimeSessionTelemetry:
 class RuntimeStreamEvent:
     event_type: str
     audio: PcmAudio | None = None
+    attributes: dict[str, Any] = field(default_factory=dict)
+    transient: bool = False
 
 
 class RuntimeSession(Protocol):
     async def send_audio(self, audio_input: PcmAudio) -> None: ...
 
     async def request_greeting(self) -> None: ...
+
+    async def interrupt(self) -> None: ...
+
+    async def append_instructions(self, text: str) -> None: ...
+
+    async def request_response(self, prompt: str | None = None) -> None: ...
 
     async def receive_event(self) -> RuntimeStreamEvent | None: ...
 
@@ -108,6 +116,10 @@ class OpenAIRealtimeSession:
         self._fatal_error: RuntimeError | None = None
         self._receiver_task: asyncio.Task[None] | None = None
         self._telemetry = RuntimeSessionTelemetry()
+        self._instruction_overrides: list[str] = []
+        self._active_response_id: str | None = None
+        self._assistant_transcript_parts: list[str] = []
+        self._user_transcript_parts: list[str] = []
 
     @classmethod
     async def connect(cls, runtime: "OpenAIRealtimeRuntime", request: RuntimeRequest) -> "OpenAIRealtimeSession":
@@ -146,6 +158,40 @@ class OpenAIRealtimeSession:
                 {
                     "type": "response.create",
                     "response": self.runtime._response_payload(self.request),
+                }
+            )
+        )
+
+    async def interrupt(self) -> None:
+        if self._fatal_error is not None:
+            raise self._fatal_error
+        await self.websocket.send(json.dumps({"type": "response.cancel"}))
+
+    async def append_instructions(self, text: str) -> None:
+        if self._fatal_error is not None:
+            raise self._fatal_error
+        payload = self.runtime._session_payload(self.request, continuous=True)
+        pending_overrides = [*self._instruction_overrides, text]
+        payload["instructions"] = (
+            f"{self.request.instructions.rstrip()}\n\n{'\n\n'.join(pending_overrides)}"
+            if pending_overrides
+            else self.request.instructions
+        )
+        await self.websocket.send(json.dumps({"type": "session.update", "session": payload}))
+        self._instruction_overrides.append(text)
+
+    async def request_response(self, prompt: str | None = None) -> None:
+        if self._fatal_error is not None:
+            raise self._fatal_error
+        await self.websocket.send(
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "response": self.runtime._response_payload(
+                        self.request,
+                        prompt=prompt,
+                        include_initial_prompt=False,
+                    ),
                 }
             )
         )
@@ -193,6 +239,22 @@ class OpenAIRealtimeSession:
                     self._ready.set()
                     continue
 
+                if event_type == "response.created":
+                    response_id = ((message.get("response") or {}).get("id")) or None
+                    self._active_response_id = response_id
+                    self._assistant_transcript_parts.clear()
+                    await self._events.put(
+                        RuntimeStreamEvent(
+                            event_type="conversation.assistant.turn.started",
+                            attributes={
+                                "speaker": "assistant",
+                                "vendor_turn_id": response_id,
+                            },
+                            transient=True,
+                        )
+                    )
+                    continue
+
                 if event_type in {"response.output_audio.delta", "response.audio.delta"}:
                     delta = message.get("delta")
                     if delta:
@@ -208,14 +270,96 @@ class OpenAIRealtimeSession:
                         )
                     continue
 
+                if event_type == "response.output_text.delta":
+                    continue
+
+                if event_type in {"response.audio_transcript.delta", "response.output_audio_transcript.delta"}:
+                    delta = message.get("delta")
+                    if delta:
+                        self._assistant_transcript_parts.append(delta)
+                        await self._events.put(
+                            RuntimeStreamEvent(
+                                event_type="conversation.assistant.transcript.delta",
+                                attributes={
+                                    "speaker": "assistant",
+                                    "vendor_turn_id": self._active_response_id,
+                                    "delta": delta,
+                                },
+                                transient=True,
+                            )
+                        )
+                    continue
+
+                if event_type in {"conversation.item.input_audio_transcription.delta", "input_audio_buffer.transcript.delta"}:
+                    delta = message.get("delta")
+                    if delta:
+                        self._user_transcript_parts.append(delta)
+                        await self._events.put(
+                            RuntimeStreamEvent(
+                                event_type="conversation.user.transcript.delta",
+                                attributes={
+                                    "speaker": "user",
+                                    "vendor_turn_id": message.get("item_id"),
+                                    "delta": delta,
+                                },
+                                transient=True,
+                            )
+                        )
+                    continue
+
+                if event_type in {"conversation.item.input_audio_transcription.completed", "input_audio_buffer.transcript.completed"}:
+                    transcript = message.get("transcript") or _join_text(self._user_transcript_parts)
+                    self._user_transcript_parts.clear()
+                    if transcript:
+                        await self._events.put(
+                            RuntimeStreamEvent(
+                                event_type="conversation.user.turn.completed",
+                                attributes={
+                                    "speaker": "user",
+                                    "vendor_turn_id": message.get("item_id"),
+                                    "text": transcript,
+                                },
+                            )
+                        )
+                    continue
+
                 if event_type in {"input_audio_buffer.speech_started", "response.cancelled", "response.interrupted"}:
-                    await self._events.put(RuntimeStreamEvent(event_type="clear"))
+                    reason = {
+                        "input_audio_buffer.speech_started": "user_barge_in",
+                        "response.cancelled": "response_cancelled",
+                        "response.interrupted": "response_interrupted",
+                    }[event_type]
+                    if event_type != "input_audio_buffer.speech_started":
+                        self._active_response_id = None
+                        self._assistant_transcript_parts.clear()
+                    await self._events.put(
+                        RuntimeStreamEvent(
+                            event_type="clear",
+                            attributes={"reason": reason},
+                        )
+                    )
                     continue
 
                 if event_type == "error":
                     error = message.get("error") or {}
                     error_text = error.get("message") or json.dumps(message)
                     raise RuntimeError(f"{self.runtime.runtime_name} returned an error: {error_text}")
+
+                if event_type == "response.done":
+                    transcript = _join_text(self._assistant_transcript_parts)
+                    if transcript:
+                        await self._events.put(
+                            RuntimeStreamEvent(
+                                event_type="conversation.assistant.turn.completed",
+                                attributes={
+                                    "speaker": "assistant",
+                                    "vendor_turn_id": self._active_response_id,
+                                    "text": transcript,
+                                },
+                            )
+                        )
+                    self._active_response_id = None
+                    self._assistant_transcript_parts.clear()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -227,6 +371,11 @@ class OpenAIRealtimeSession:
         finally:
             await self._events.put(None)
             self._closed.set()
+
+    def _instructions_with_overrides(self) -> str:
+        if not self._instruction_overrides:
+            return self.request.instructions
+        return f"{self.request.instructions.rstrip()}\n\n{'\n\n'.join(self._instruction_overrides)}"
 
 
 class OpenAIRealtimeRuntime:
@@ -408,11 +557,19 @@ class OpenAIRealtimeRuntime:
             payload["audio"]["input"]["turn_detection"] = turn_detection
         return payload
 
-    def _response_payload(self, request: RuntimeRequest) -> dict[str, Any]:
+    def _response_payload(
+        self,
+        request: RuntimeRequest,
+        *,
+        prompt: str | None = None,
+        include_initial_prompt: bool = True,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {}
-        prompt = build_initial_response_prompt(request)
-        if prompt:
-            payload["instructions"] = prompt
+        resolved_prompt = prompt
+        if resolved_prompt is None and include_initial_prompt:
+            resolved_prompt = build_initial_response_prompt(request)
+        if resolved_prompt:
+            payload["instructions"] = resolved_prompt
         return payload
 
     async def _append_current_input_audio(self, websocket: Any, audio_input: PcmAudio) -> None:

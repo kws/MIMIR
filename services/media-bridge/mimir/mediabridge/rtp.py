@@ -48,6 +48,13 @@ class RtpTelemetrySnapshot:
     jitter_ms: float = 0.0
     received_packets: int = 0
     invalid_packets: int = 0
+    missing_packets: int = 0
+    duplicate_packets: int = 0
+    late_packets: int = 0
+    out_of_order_packets: int = 0
+    max_buffered_packets: int = 0
+    sender_lag_ms_avg: float = 0.0
+    sender_lag_ms_max: float = 0.0
 
 
 def parse_rtp_packet(packet_bytes: bytes) -> RtpPacket:
@@ -114,31 +121,51 @@ def pcm16_to_ulaw(frames: bytes) -> bytes:
 @dataclass(slots=True)
 class RtpInboundTelemetryTracker:
     sample_rate_hz: int = G711_ULAW_SAMPLE_RATE_HZ
-    first_sequence_number: int | None = None
     highest_sequence_number: int | None = None
     received_packets: int = 0
     invalid_packets: int = 0
-    lost_packets: int = 0
+    missing_packets: int = 0
+    duplicate_packets: int = 0
+    late_packets: int = 0
+    out_of_order_packets: int = 0
+    max_buffered_packets: int = 0
+    sender_lag_total_ms: float = 0.0
+    sender_lag_samples: int = 0
+    sender_lag_ms_max: float = 0.0
     previous_transit: float | None = None
     jitter: float = 0.0
 
     def note_invalid_packet(self) -> None:
         self.invalid_packets += 1
 
+    def note_duplicate_packet(self) -> None:
+        self.duplicate_packets += 1
+
+    def note_late_packet(self) -> None:
+        self.late_packets += 1
+
+    def note_out_of_order_packet(self) -> None:
+        self.out_of_order_packets += 1
+
+    def note_missing_packets(self, count: int) -> None:
+        if count > 0:
+            self.missing_packets += count
+
+    def note_buffered_packets(self, count: int) -> None:
+        self.max_buffered_packets = max(self.max_buffered_packets, count)
+
+    def note_sender_lag(self, lag_seconds: float) -> None:
+        lag_ms = max(0.0, lag_seconds * 1000.0)
+        self.sender_lag_total_ms += lag_ms
+        self.sender_lag_samples += 1
+        self.sender_lag_ms_max = max(self.sender_lag_ms_max, lag_ms)
+
     def note_packet(self, packet: RtpPacket, received_at: float | None = None) -> None:
         arrival = received_at if received_at is not None else time.monotonic()
         self.received_packets += 1
 
-        if self.first_sequence_number is None:
-            self.first_sequence_number = packet.sequence_number
+        if self.highest_sequence_number is None or _sequence_is_newer(packet.sequence_number, self.highest_sequence_number):
             self.highest_sequence_number = packet.sequence_number
-        else:
-            assert self.highest_sequence_number is not None
-            delta = _sequence_delta(packet.sequence_number, self.highest_sequence_number)
-            if 0 < delta < 0x8000:
-                if delta > 1:
-                    self.lost_packets += delta - 1
-                self.highest_sequence_number = packet.sequence_number
 
         arrival_rtp_units = arrival * self.sample_rate_hz
         transit = arrival_rtp_units - packet.timestamp
@@ -148,15 +175,22 @@ class RtpInboundTelemetryTracker:
         self.previous_transit = transit
 
     def snapshot(self) -> RtpTelemetrySnapshot:
-        expected_packets = self.received_packets + self.lost_packets
+        expected_packets = self.received_packets + self.missing_packets
         packet_loss_pct = 0.0
         if expected_packets > 0:
-            packet_loss_pct = round((self.lost_packets / expected_packets) * 100.0, 4)
+            packet_loss_pct = round((self.missing_packets / expected_packets) * 100.0, 4)
         return RtpTelemetrySnapshot(
             packet_loss_pct=packet_loss_pct,
             jitter_ms=round((self.jitter / self.sample_rate_hz) * 1000.0, 4),
             received_packets=self.received_packets,
             invalid_packets=self.invalid_packets,
+            missing_packets=self.missing_packets,
+            duplicate_packets=self.duplicate_packets,
+            late_packets=self.late_packets,
+            out_of_order_packets=self.out_of_order_packets,
+            max_buffered_packets=self.max_buffered_packets,
+            sender_lag_ms_avg=round(self.sender_lag_total_ms / self.sender_lag_samples, 4) if self.sender_lag_samples else 0.0,
+            sender_lag_ms_max=round(self.sender_lag_ms_max, 4),
         )
 
 
@@ -260,6 +294,11 @@ def _bind_socket(bind_address: str, port: int) -> socket.socket:
 
 def _sequence_delta(current: int, previous: int) -> int:
     return (current - previous) & 0xFFFF
+
+
+def _sequence_is_newer(current: int, previous: int) -> bool:
+    delta = _sequence_delta(current, previous)
+    return 0 < delta < 0x8000
 
 
 def _encode_ulaw_sample(sample: int) -> int:

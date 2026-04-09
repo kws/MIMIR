@@ -58,6 +58,7 @@ def test_rtp_inbound_telemetry_tracks_loss_and_invalid_packets() -> None:
         ),
         received_at=0.0,
     )
+    tracker.note_missing_packets(1)
     tracker.note_packet(
         RtpPacket(
             payload_type=RTP_PAYLOAD_TYPE_PCMU,
@@ -73,7 +74,36 @@ def test_rtp_inbound_telemetry_tracks_loss_and_invalid_packets() -> None:
 
     assert snapshot.invalid_packets == 1
     assert snapshot.received_packets == 2
+    assert snapshot.missing_packets == 1
     assert snapshot.packet_loss_pct > 0
+
+
+def test_rtp_inbound_telemetry_tracks_duplicates_late_packets_and_sender_lag() -> None:
+    tracker = RtpInboundTelemetryTracker()
+    tracker.note_packet(
+        RtpPacket(
+            payload_type=RTP_PAYLOAD_TYPE_PCMU,
+            sequence_number=10,
+            timestamp=0,
+            ssrc=1,
+            payload=b"\xff" * G711_ULAW_PAYLOAD_BYTES,
+        ),
+        received_at=0.0,
+    )
+    tracker.note_out_of_order_packet()
+    tracker.note_duplicate_packet()
+    tracker.note_late_packet()
+    tracker.note_buffered_packets(3)
+    tracker.note_sender_lag(0.0125)
+
+    snapshot = tracker.snapshot()
+
+    assert snapshot.out_of_order_packets == 1
+    assert snapshot.duplicate_packets == 1
+    assert snapshot.late_packets == 1
+    assert snapshot.max_buffered_packets == 3
+    assert snapshot.sender_lag_ms_avg == 12.5
+    assert snapshot.sender_lag_ms_max == 12.5
 
 
 def test_rtp_outbound_stream_packetizes_24khz_audio_into_ulaw_frames() -> None:
