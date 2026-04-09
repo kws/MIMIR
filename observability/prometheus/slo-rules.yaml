@@ -14,6 +14,9 @@ groups:
       - record: slo:rtp_packet_loss_p95_pct_by_runtime
         expr: histogram_quantile(0.95, sum(rate(media_bridge_rtp_packet_loss_pct_bucket[5m])) by (runtime, le))
 
+      - record: slo:rtp_sender_lag_p95_ms_by_runtime
+        expr: histogram_quantile(0.95, sum(rate(media_bridge_rtp_sender_lag_ms_bucket[5m])) by (runtime, le))
+
       - record: slo:websocket_error_rate_by_runtime
         expr: sum(rate(media_bridge_websocket_error_total[5m])) by (runtime)
 
@@ -49,6 +52,14 @@ groups:
           severity: warning
         annotations:
           summary: "RTP jitter/loss SLO is breached"
+
+      - alert: MimirRtpSenderLagSLOBreached
+        expr: slo:rtp_sender_lag_p95_ms_by_runtime > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbound RTP sender lag p95 is elevated"
 
       - alert: MimirWebsocketHealthSLOBreached
         expr: slo:websocket_error_rate_by_runtime > 0.05

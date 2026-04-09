@@ -2,6 +2,7 @@ services:
   pbx-fixture:
     build:
       context: ./pbx
+    restart: unless-stopped
     ports:
       - "5060:5060/udp"
       - "8088:8088"
@@ -21,8 +22,10 @@ services:
       - --orchestrator-url
       - http://orchestrator:8080
     depends_on:
-      - pbx-fixture
-      - orchestrator
+      pbx-fixture:
+        condition: service_started
+      orchestrator:
+        condition: service_healthy
     restart: unless-stopped
 
   media-bridge:
@@ -35,6 +38,21 @@ services:
       MEDIA_BRIDGE_RTP_ADVERTISED_ADDRESS: ${MEDIA_BRIDGE_RTP_ADVERTISED_ADDRESS:-media-bridge}
       MEDIA_BRIDGE_RTP_PORT_START: ${MEDIA_BRIDGE_RTP_PORT_START:-12000}
       MEDIA_BRIDGE_RTP_PORT_END: ${MEDIA_BRIDGE_RTP_PORT_END:-12099}
+    volumes:
+      - ./media-bridge/artifacts:/app/artifacts
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.request
+          urllib.request.urlopen("http://127.0.0.1:8081/healthz", timeout=5).read()
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
     ports:
       - "8081:8081"
       - "12000-12099:12000-12099/udp"
@@ -53,7 +71,77 @@ services:
     volumes:
       - ./config:/etc/mimir:ro
     depends_on:
-      - pbx-fixture
-      - media-bridge
+      pbx-fixture:
+        condition: service_started
+      media-bridge:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.request
+          urllib.request.urlopen("http://127.0.0.1:8080/healthz", timeout=5).read()
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
     ports:
       - "8080:8080"
+
+  event-trace:
+    build:
+      context: ../observability/event-tap
+    environment:
+      CALL_EVENTS_URL: http://orchestrator:8080/v1/call-events
+      MEDIA_EVENTS_URL: http://media-bridge:8081/v1/media/events
+      TRACE_DIR: /traces
+    volumes:
+      - ../observability/artifacts/event-trace:/traces
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+      media-bridge:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    volumes:
+      - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../observability/prometheus/slo-rules.yaml:/etc/prometheus/rules/slo-rules.yaml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+      media-bridge:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+
+volumes:
+  grafana-data:
+  prometheus-data:
