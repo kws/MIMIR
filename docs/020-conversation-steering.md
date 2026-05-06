@@ -28,7 +28,7 @@ Let the orchestrator guide active conversations based on normalized conversation
    - Key decisions by call ID, turn ID, rule ID, and command type.
 
 4. Start with simple steering rules.
-   - Human handoff request: interrupt and ask a concise transition question.
+   - Topic switch magic phrase: when the caller says `mimir pivot`, append an instruction to switch topics on the next answer.
    - Excessive verbosity: append an instruction to keep the next answer brief.
    - Caller confusion: request a short recap and one clarifying question.
    - Policy-sensitive phrase: append a scoped instruction for the rest of the call.

@@ -17,6 +17,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from pydantic import BaseModel, Field
 
 from .config_service import AIProfile, AIProfileConfigService
+from .conversation_supervisor import SteeringDecision, evaluate_steering_decisions
 from .datastore import create_datastore, now_iso
 from .media_bridge_client import MediaBridgeClient
 
@@ -90,6 +91,15 @@ class ConversationCommandPayload(BaseModel):
     command: Literal["interrupt", "append_instructions", "request_response"]
     text: str | None = None
     prompt: str | None = None
+
+
+class ConversationCommandDispatchError(Exception):
+    def __init__(self, status_code: int | None, detail: Any, *, rejected: bool, command_sent: bool) -> None:
+        self.status_code = status_code
+        self.detail = detail
+        self.rejected = rejected
+        self.command_sent = command_sent
+        super().__init__(str(detail))
 
 
 class AIProfileMappingRequest(BaseModel):
@@ -224,6 +234,8 @@ def _default_conversation_projection() -> dict[str, Any]:
         "status": "idle",
         "latest_user_turn": None,
         "latest_assistant_turn": None,
+        "latest_steering_decision": None,
+        "latest_command": None,
         "instruction_override_text": "",
         "turn_index": 0,
     }
@@ -237,6 +249,43 @@ def _conversation_turn_payload(attributes: dict[str, Any], occurred_at: str) -> 
         "text": attributes.get("text"),
         "occurred_at": occurred_at,
     }
+
+
+def _conversation_command_payload(event_type: str, attributes: dict[str, Any], occurred_at: str) -> dict[str, Any]:
+    payload = {
+        "command": attributes.get("command"),
+        "status": event_type.removeprefix("conversation.command."),
+        "occurred_at": occurred_at,
+    }
+    for key in ("text", "prompt", "reason", "instruction_override_text"):
+        if attributes.get(key) is not None:
+            payload[key] = attributes[key]
+    return payload
+
+
+def _conversation_steering_decision_payload(attributes: dict[str, Any], occurred_at: str) -> dict[str, Any]:
+    payload = {
+        "occurred_at": occurred_at,
+    }
+    for key in (
+        "decision_key",
+        "rule_id",
+        "reason",
+        "source_event_id",
+        "source_event_type",
+        "turn_id",
+        "turn_index",
+        "speaker",
+        "command",
+        "command_payload",
+        "outcome",
+        "command_sent",
+        "error_status",
+        "error_detail",
+    ):
+        if key in attributes and attributes.get(key) is not None:
+            payload[key] = attributes[key]
+    return payload
 
 
 def _conversation_projection_for_event(
@@ -262,11 +311,14 @@ def _conversation_projection_for_event(
         conversation["latest_assistant_turn"] = _conversation_turn_payload(attributes, occurred_at)
     elif event_type == "conversation.interruption":
         conversation["status"] = "interrupted"
-    elif event_type == "conversation.command.applied":
-        if attributes.get("command") == "append_instructions":
+    elif event_type in {"conversation.command.requested", "conversation.command.applied", "conversation.command.failed"}:
+        conversation["latest_command"] = _conversation_command_payload(event_type, attributes, occurred_at)
+        if event_type == "conversation.command.applied" and attributes.get("command") == "append_instructions":
             conversation["instruction_override_text"] = attributes.get("instruction_override_text", "")
-        if attributes.get("command") == "interrupt":
+        if event_type == "conversation.command.applied" and attributes.get("command") == "interrupt":
             conversation["status"] = "interrupted"
+    elif event_type == "conversation.steering.decision":
+        conversation["latest_steering_decision"] = _conversation_steering_decision_payload(attributes, occurred_at)
 
     return conversation
 
@@ -364,6 +416,43 @@ def _conversation_command_body(request: ConversationCommandPayload) -> dict[str,
     return body
 
 
+def _command_error_detail(exc: httpx.HTTPStatusError) -> Any:
+    try:
+        return exc.response.json()
+    except ValueError:
+        return exc.response.text
+
+
+async def _send_conversation_command_for_call(
+    call_id: str,
+    request: ConversationCommandPayload,
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    projection = await datastore.load_call_projection(call_id)
+    if not projection:
+        raise HTTPException(status_code=404, detail="call not found")
+
+    _validate_conversation_command(request)
+
+    session_id = projection.get("media_session_id")
+    if not session_id:
+        raise HTTPException(status_code=409, detail="media session is not ready")
+
+    try:
+        command_response = await media_client.send_conversation_command(session_id, _conversation_command_body(request))
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        raise ConversationCommandDispatchError(
+            status_code,
+            _command_error_detail(exc),
+            rejected=status_code in {400, 409, 501},
+            command_sent=True,
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise ConversationCommandDispatchError(None, str(exc), rejected=False, command_sent=False) from exc
+
+    return session_id, command_response, projection
+
+
 async def _attach_media_for_call(
     call_id: str,
     session_id: str,
@@ -433,6 +522,81 @@ async def _handle_media_event_payload(payload: dict[str, Any]) -> None:
         await _publish_transient_event(call_id, event_type, event_attributes)
     else:
         await _publish_event(call_id, event_type, event_attributes)
+        await _supervise_completed_turn(payload)
+
+
+async def _supervise_completed_turn(payload: dict[str, Any]) -> None:
+    for decision in evaluate_steering_decisions(payload):
+        await _handle_steering_decision(decision)
+
+
+async def _handle_steering_decision(decision: SteeringDecision) -> None:
+    reserved, _ = await datastore.reserve_idempotency(
+        "conversation-steering",
+        decision.decision_key,
+        decision.audit_attributes(),
+    )
+    if not reserved:
+        await _publish_steering_decision(decision, outcome="suppressed", command_sent=False)
+        return
+
+    try:
+        await _send_conversation_command_for_call(decision.call_id, ConversationCommandPayload(**decision.command_payload))
+    except ConversationCommandDispatchError as exc:
+        await _publish_steering_decision(
+            decision,
+            outcome="rejected" if exc.rejected else "send_failed",
+            command_sent=exc.command_sent,
+            error_status=exc.status_code,
+            error_detail=exc.detail,
+        )
+    except HTTPException as exc:
+        await _publish_steering_decision(
+            decision,
+            outcome="send_failed",
+            command_sent=False,
+            error_status=exc.status_code,
+            error_detail=exc.detail,
+        )
+    else:
+        await _publish_steering_decision(decision, outcome="sent", command_sent=True)
+
+
+async def _publish_steering_decision(
+    decision: SteeringDecision,
+    *,
+    outcome: Literal["sent", "suppressed", "rejected", "send_failed"],
+    command_sent: bool,
+    error_status: int | None = None,
+    error_detail: Any = None,
+) -> dict[str, Any]:
+    attributes = {
+        **decision.audit_attributes(),
+        "outcome": outcome,
+        "command_sent": command_sent,
+    }
+    if error_status is not None:
+        attributes["error_status"] = error_status
+    if error_detail is not None:
+        attributes["error_detail"] = error_detail
+
+    event = await _publish_event(decision.call_id, "conversation.steering.decision", attributes)
+    projection = await datastore.load_call_projection(decision.call_id) or {"call_id": decision.call_id}
+    conversation = _conversation_projection_for_event(
+        projection,
+        event["event_type"],
+        attributes,
+        event["occurred_at"],
+    )
+    await _update_projection(decision.call_id, {"conversation": conversation})
+    _structured_log(
+        "conversation_steering_decision",
+        call_id=decision.call_id,
+        rule_id=decision.rule_id,
+        outcome=outcome,
+        command=decision.command,
+    )
+    return event
 
 
 @app.post("/v1/calls/inbound")
@@ -588,25 +752,10 @@ async def command_call_conversation(
     call_id: str,
     request: ConversationCommandPayload,
 ) -> dict[str, Any]:
-    projection = await datastore.load_call_projection(call_id)
-    if not projection:
-        raise HTTPException(status_code=404, detail="call not found")
-
-    _validate_conversation_command(request)
-
-    session_id = projection.get("media_session_id")
-    if not session_id:
-        raise HTTPException(status_code=409, detail="media session is not ready")
-
     try:
-        command_response = await media_client.send_conversation_command(session_id, _conversation_command_body(request))
-    except httpx.HTTPStatusError as exc:
-        detail: Any
-        try:
-            detail = exc.response.json()
-        except ValueError:
-            detail = exc.response.text
-        raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        session_id, command_response, projection = await _send_conversation_command_for_call(call_id, request)
+    except ConversationCommandDispatchError as exc:
+        raise HTTPException(status_code=exc.status_code or 502, detail=exc.detail) from exc
 
     refreshed_projection = await datastore.load_call_projection(call_id)
     return {
