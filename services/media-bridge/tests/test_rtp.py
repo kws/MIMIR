@@ -5,6 +5,8 @@ from mimir.mediabridge.rtp import (
     RtpInboundTelemetryTracker,
     RtpOutboundStream,
     RtpPacket,
+    RtpPlayoutBuffer,
+    RtpQualitySettings,
     build_rtp_packet,
     decode_ulaw_payload,
     parse_rtp_packet,
@@ -115,3 +117,46 @@ def test_rtp_outbound_stream_packetizes_24khz_audio_into_ulaw_frames() -> None:
 
     assert packet.payload_type == RTP_PAYLOAD_TYPE_PCMU
     assert len(packet.payload) == G711_ULAW_PAYLOAD_BYTES
+
+
+def test_rtp_playout_buffer_bounds_bursty_audio_and_drops_oldest() -> None:
+    buffer = RtpPlayoutBuffer(max_depth_ms=40, target_prefill_ms=0)
+    frames = [_pcm_frame(sample) for sample in (1000, 2000, 3000, 4000, 5000)]
+
+    buffer.enqueue_audio(PcmAudio(pcm16=b"".join(frames), sample_rate_hz=8000, channels=1))
+
+    snapshot = buffer.snapshot()
+    assert snapshot.depth_ms == 40.0
+    assert snapshot.enqueued_ms == 100.0
+    assert snapshot.dropped_ms == 60.0
+    assert buffer.next_payload() == pcm16_to_ulaw(frames[3])
+    assert buffer.next_payload() == pcm16_to_ulaw(frames[4])
+
+
+def test_rtp_playout_buffer_snapshot_reports_underruns() -> None:
+    buffer = RtpPlayoutBuffer(max_depth_ms=40, target_prefill_ms=0)
+
+    assert buffer.next_payload() is None
+
+    snapshot = buffer.snapshot()
+    assert snapshot.depth_ms == 0.0
+    assert snapshot.max_depth_ms == 40.0
+    assert snapshot.underruns == 1
+    assert snapshot.truncated_ms == 0.0
+
+
+def test_rtp_outbound_stream_sequence_and_timestamp_advance_per_packet() -> None:
+    stream = RtpOutboundStream(settings=RtpQualitySettings(playout_max_depth_ms=100))
+    stream.enqueue_audio(PcmAudio(pcm16=_pcm_frame(1000) + _pcm_frame(2000), sample_rate_hz=8000, channels=1))
+
+    first = parse_rtp_packet(stream.next_packet() or b"")
+    second = parse_rtp_packet(stream.next_packet() or b"")
+
+    assert second.sequence_number == (first.sequence_number + 1) & 0xFFFF
+    assert second.timestamp == (first.timestamp + G711_ULAW_PAYLOAD_BYTES) & 0xFFFFFFFF
+    assert len(first.payload) == G711_ULAW_PAYLOAD_BYTES
+    assert len(second.payload) == G711_ULAW_PAYLOAD_BYTES
+
+
+def _pcm_frame(sample: int) -> bytes:
+    return sample.to_bytes(2, "little", signed=True) * G711_ULAW_PAYLOAD_BYTES

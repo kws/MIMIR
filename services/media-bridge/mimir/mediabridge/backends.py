@@ -13,7 +13,7 @@ from .controller_contract import (
     RtpFlow,
 )
 from .live_rtp import LiveRtpBridge, LiveRtpHooks
-from .rtp import RtpSocketReservation, close_socket_quietly, reserve_rtp_socket
+from .rtp import RtpQualitySettings, RtpSocketReservation, close_socket_quietly, reserve_rtp_socket
 from .runtimes import (
     GEMINI_RUNTIME,
     OPENAI_RUNTIME,
@@ -66,11 +66,18 @@ class BackendSession:
 
 
 class RuntimeMediaBackend:
-    def __init__(self, runtime: LiveRuntime, artifact_root: Path, rtp_config: RtpRuntimeConfig) -> None:
+    def __init__(
+        self,
+        runtime: LiveRuntime,
+        artifact_root: Path,
+        rtp_config: RtpRuntimeConfig,
+        rtp_quality_settings: RtpQualitySettings,
+    ) -> None:
         self.runtime = runtime
         self.runtime_name = runtime.runtime_name
         self.artifact_root = artifact_root
         self.rtp_config = rtp_config
+        self.rtp_quality_settings = rtp_quality_settings
 
     def create(self, request: CreateMediaSessionRequest, session_id: str) -> BackendSession:
         reservation = reserve_rtp_socket(
@@ -126,6 +133,7 @@ class RuntimeMediaBackend:
                     reservation=session.rtp_reservation,
                     runtime_session=runtime_session,
                     hooks=hooks,
+                    settings=self.rtp_quality_settings,
                 )
                 try:
                     await live_bridge.activate(session.rtp.remote_address, session.rtp.remote_port)
@@ -234,10 +242,27 @@ class BackendRouter:
             port_range_start=int(os.getenv("MEDIA_BRIDGE_RTP_PORT_START", "12000")),
             port_range_end=int(os.getenv("MEDIA_BRIDGE_RTP_PORT_END", "12099")),
         )
+        rtp_quality_settings = RtpQualitySettings(
+            playout_max_depth_ms=_env_int("MEDIA_BRIDGE_PLAYOUT_MAX_DEPTH_MS", 1200),
+            playout_target_prefill_ms=_env_int("MEDIA_BRIDGE_PLAYOUT_TARGET_PREFILL_MS", 60),
+            playout_stale_policy=os.getenv("MEDIA_BRIDGE_PLAYOUT_STALE_POLICY", "drop_oldest"),
+            playout_underrun_policy=os.getenv("MEDIA_BRIDGE_PLAYOUT_UNDERRUN_POLICY", "no_send"),
+            inbound_jitter_buffer_packets=_env_int("MEDIA_BRIDGE_INBOUND_JITTER_BUFFER_PACKETS", 3),
+        )
 
         self._backends = {
-            OPENAI_RUNTIME: RuntimeMediaBackend(OpenAIRealtimeRuntime(), artifact_root=artifact_root, rtp_config=rtp_config),
-            GEMINI_RUNTIME: RuntimeMediaBackend(GeminiLiveRuntime(), artifact_root=artifact_root, rtp_config=rtp_config),
+            OPENAI_RUNTIME: RuntimeMediaBackend(
+                OpenAIRealtimeRuntime(),
+                artifact_root=artifact_root,
+                rtp_config=rtp_config,
+                rtp_quality_settings=rtp_quality_settings,
+            ),
+            GEMINI_RUNTIME: RuntimeMediaBackend(
+                GeminiLiveRuntime(),
+                artifact_root=artifact_root,
+                rtp_config=rtp_config,
+                rtp_quality_settings=rtp_quality_settings,
+            ),
         }
         self.default_runtime = os.getenv("MEDIA_BRIDGE_DEFAULT_RUNTIME", OPENAI_RUNTIME)
 
@@ -264,3 +289,7 @@ class BackendRouter:
                 return OPENAI_RUNTIME
 
         return self.default_runtime
+
+
+def _env_int(name: str, default: int) -> int:
+    return int(os.getenv(name, str(default)))

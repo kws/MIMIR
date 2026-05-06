@@ -134,6 +134,38 @@ RTP_SENDER_LAG_MS = Histogram(
     labelnames=("runtime",),
     buckets=(0, 1, 2, 5, 10, 20, 40, 80, 160),
 )
+RTP_PLAYOUT_DEPTH_MS = Histogram(
+    "media_bridge_rtp_playout_depth_ms",
+    "Outbound RTP playout buffer depth in milliseconds.",
+    labelnames=("runtime",),
+    buckets=(0, 20, 40, 60, 100, 200, 400, 800, 1200, 2000, 5000),
+)
+RTP_PLAYOUT_DROPPED_MS_TOTAL = Counter(
+    "media_bridge_rtp_playout_dropped_ms_total",
+    "Total outbound RTP playout audio dropped in milliseconds.",
+    labelnames=("runtime",),
+)
+RTP_PLAYOUT_TRUNCATED_MS_TOTAL = Counter(
+    "media_bridge_rtp_playout_truncated_ms_total",
+    "Total outbound RTP playout audio truncated in milliseconds.",
+    labelnames=("runtime",),
+)
+RTP_PLAYOUT_UNDERRUN_TOTAL = Counter(
+    "media_bridge_rtp_playout_underrun_total",
+    "Count of outbound RTP send ticks without enough queued audio.",
+    labelnames=("runtime",),
+)
+RTP_OUTBOUND_PACKETS_TOTAL = Counter(
+    "media_bridge_rtp_outbound_packets_total",
+    "Count of outbound RTP packets sent by the media bridge.",
+    labelnames=("runtime",),
+)
+RTP_OUTBOUND_PACKET_SPACING_MS = Histogram(
+    "media_bridge_rtp_outbound_packet_spacing_ms",
+    "Maximum observed outbound RTP packet spacing per session in milliseconds.",
+    labelnames=("runtime",),
+    buckets=(0, 10, 15, 20, 25, 30, 40, 60, 100, 200),
+)
 WS_RECONNECT_TOTAL = Counter(
     "media_bridge_websocket_reconnect_total",
     "Count of websocket reconnect attempts in media runtime.",
@@ -216,6 +248,17 @@ def _live_rtp_hooks(record: BackendSession) -> LiveRtpHooks:
             RTP_OUT_OF_ORDER_TOTAL.labels(runtime=record.runtime).inc(snapshot.out_of_order_packets)
         RTP_JITTER_BUFFER_DEPTH.labels(runtime=record.runtime).observe(snapshot.max_buffered_packets)
         RTP_SENDER_LAG_MS.labels(runtime=record.runtime).observe(snapshot.sender_lag_ms_max)
+        RTP_PLAYOUT_DEPTH_MS.labels(runtime=record.runtime).observe(snapshot.playout_depth_ms)
+        if snapshot.playout_dropped_ms:
+            RTP_PLAYOUT_DROPPED_MS_TOTAL.labels(runtime=record.runtime).inc(snapshot.playout_dropped_ms)
+        if snapshot.playout_truncated_ms:
+            RTP_PLAYOUT_TRUNCATED_MS_TOTAL.labels(runtime=record.runtime).inc(snapshot.playout_truncated_ms)
+        if snapshot.playout_underruns:
+            RTP_PLAYOUT_UNDERRUN_TOTAL.labels(runtime=record.runtime).inc(snapshot.playout_underruns)
+        if snapshot.outbound_packets_sent:
+            RTP_OUTBOUND_PACKETS_TOTAL.labels(runtime=record.runtime).inc(snapshot.outbound_packets_sent)
+        if snapshot.outbound_packet_spacing_ms_max:
+            RTP_OUTBOUND_PACKET_SPACING_MS.labels(runtime=record.runtime).observe(snapshot.outbound_packet_spacing_ms_max)
         if runtime_telemetry.ws_reconnects:
             WS_RECONNECT_TOTAL.labels(runtime=record.runtime).inc(runtime_telemetry.ws_reconnects)
         if runtime_telemetry.ws_errors:
@@ -236,6 +279,15 @@ def _live_rtp_hooks(record: BackendSession) -> LiveRtpHooks:
                 "max_buffered_packets": snapshot.max_buffered_packets,
                 "sender_lag_ms_avg": snapshot.sender_lag_ms_avg,
                 "sender_lag_ms_max": snapshot.sender_lag_ms_max,
+                "playout_depth_ms": snapshot.playout_depth_ms,
+                "playout_max_depth_ms": snapshot.playout_max_depth_ms,
+                "playout_enqueued_ms": snapshot.playout_enqueued_ms,
+                "playout_dropped_ms": snapshot.playout_dropped_ms,
+                "playout_truncated_ms": snapshot.playout_truncated_ms,
+                "playout_underruns": snapshot.playout_underruns,
+                "outbound_packets_sent": snapshot.outbound_packets_sent,
+                "outbound_packet_spacing_ms_avg": snapshot.outbound_packet_spacing_ms_avg,
+                "outbound_packet_spacing_ms_max": snapshot.outbound_packet_spacing_ms_max,
                 "ws_reconnects": runtime_telemetry.ws_reconnects,
                 "ws_errors": runtime_telemetry.ws_errors,
                 "first_audio_latency_ms": None
@@ -253,19 +305,26 @@ def _live_rtp_hooks(record: BackendSession) -> LiveRtpHooks:
             return
         record.status = "terminated"
         record.reason = reason
+        snapshot = tracker.snapshot()
         CALL_COMPLETION_TOTAL.labels(result="failed", reason="live_bridge_failure", runtime=record.runtime).inc()
         await _emit_event(
             "media.session.failed",
             record,
             {
                 "reason": reason,
-                "packet_loss_pct": tracker.snapshot().packet_loss_pct,
-                "jitter_ms": tracker.snapshot().jitter_ms,
-                "missing_packets": tracker.snapshot().missing_packets,
-                "duplicate_packets": tracker.snapshot().duplicate_packets,
-                "late_packets": tracker.snapshot().late_packets,
-                "out_of_order_packets": tracker.snapshot().out_of_order_packets,
-                "sender_lag_ms_max": tracker.snapshot().sender_lag_ms_max,
+                "packet_loss_pct": snapshot.packet_loss_pct,
+                "jitter_ms": snapshot.jitter_ms,
+                "missing_packets": snapshot.missing_packets,
+                "duplicate_packets": snapshot.duplicate_packets,
+                "late_packets": snapshot.late_packets,
+                "out_of_order_packets": snapshot.out_of_order_packets,
+                "sender_lag_ms_max": snapshot.sender_lag_ms_max,
+                "playout_depth_ms": snapshot.playout_depth_ms,
+                "playout_dropped_ms": snapshot.playout_dropped_ms,
+                "playout_truncated_ms": snapshot.playout_truncated_ms,
+                "playout_underruns": snapshot.playout_underruns,
+                "outbound_packets_sent": snapshot.outbound_packets_sent,
+                "outbound_packet_spacing_ms_max": snapshot.outbound_packet_spacing_ms_max,
                 "ws_errors": runtime_telemetry.ws_errors,
                 "vendor_session_id": runtime_telemetry.vendor_session_id,
             },

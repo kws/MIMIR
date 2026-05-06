@@ -96,6 +96,7 @@ The repository is now explicitly organized around a provider-agnostic boundary:
 - The media bridge now exposes session creation, live RTP activation, termination, telemetry, an SSE event stream carrying `conversation.*` events, and light steering commands at `POST /v1/media/sessions/{session_id}/conversation/commands`.
 - The media bridge can now verify live model runtimes with prerecorded WAV fixtures against OpenAI Realtime and Gemini Live.
 - The media bridge now supports live bidirectional RTP bridging for `g711_ulaw` against OpenAI Realtime, with bridge RTP allocation returned in media-session responses.
+- The media bridge now bounds outbound RTP playout buffering, paces model audio at 20 ms RTP intervals, and reports playout underruns/drops in telemetry.
 - A PBX fixture is included in the default stack for simple local testing, with an ARI edge-adapter path that routes calls through the orchestrator.
 - Generic SIP registration, SDP negotiation, Twilio, and hosted-provider adapters still remain future work.
 
@@ -147,7 +148,7 @@ The default compose stack now includes a usable local observability rig:
 
 This gives us a practical split between:
 
-- call-quality evidence in Prometheus/Grafana: first audio, RTP jitter/loss, sender lag, jitter-buffer depth, websocket health, failure reasons
+- call-quality evidence in Prometheus/Grafana: first audio, RTP jitter/loss, sender lag, playout depth/drops/underruns, jitter-buffer depth, websocket health, failure reasons
 - lifecycle and conversation evidence in event traces: call acceptance, media activation, attach timing, transcript deltas, completed turns, steering commands, and call end/failure reasons
 
 Conversation quality is now observable through normalized SSE events, but it is still less dashboarded than transport quality. Prometheus and Grafana remain strongest for call/media timing and packet behavior, while transcript deltas and turn history are best inspected through the event-trace NDJSON artifacts.

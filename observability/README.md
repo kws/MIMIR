@@ -35,6 +35,7 @@ Use the `runtime` label on media bridge telemetry to compare:
 - first-audio latency
 - RTP packet loss / jitter
 - RTP sender lag and jitter-buffer depth
+- RTP playout buffer depth, stale audio drops, underruns, outbound packet count, and packet spacing
 - duplicate, late, missing, and out-of-order packet rates
 - websocket reconnect and error rates
 - media bridge call completion and failure reasons
@@ -60,6 +61,18 @@ Payload fields:
 - `ws_reconnects`
 - `ws_errors`
 - `first_audio_latency_ms`
+
+Live RTP telemetry events may also include:
+
+- `playout_depth_ms`
+- `playout_max_depth_ms`
+- `playout_enqueued_ms`
+- `playout_dropped_ms`
+- `playout_truncated_ms`
+- `playout_underruns`
+- `outbound_packets_sent`
+- `outbound_packet_spacing_ms_avg`
+- `outbound_packet_spacing_ms_max`
 
 ## Conversation event traces
 

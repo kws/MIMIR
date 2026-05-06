@@ -100,6 +100,17 @@ def resample_pcm16_mono(frames: bytes, source_rate_hz: int, target_rate_hz: int)
         raise ValueError("sample rates must be positive")
     if source_rate_hz == target_rate_hz or not frames:
         return frames
+    if source_rate_hz == 24_000 and target_rate_hz == 8_000:
+        return downsample_24k_to_8k_pcm16_mono(frames)
+
+    return linear_resample_pcm16_mono(frames, source_rate_hz, target_rate_hz)
+
+
+def linear_resample_pcm16_mono(frames: bytes, source_rate_hz: int, target_rate_hz: int) -> bytes:
+    if source_rate_hz <= 0 or target_rate_hz <= 0:
+        raise ValueError("sample rates must be positive")
+    if source_rate_hz == target_rate_hz or not frames:
+        return frames
 
     source = array("h")
     source.frombytes(frames)
@@ -129,3 +140,28 @@ def resample_pcm16_mono(frames: bytes, source_rate_hz: int, target_rate_hz: int)
     if sys.byteorder != "little":
         resampled.byteswap()
     return resampled.tobytes()
+
+
+def downsample_24k_to_8k_pcm16_mono(frames: bytes) -> bytes:
+    source = array("h")
+    source.frombytes(frames)
+    if sys.byteorder != "little":
+        source.byteswap()
+
+    if not source:
+        return frames
+
+    target_length = max(1, int(round(len(source) / 3)))
+    filtered = array("h")
+    max_index = len(source) - 1
+
+    for target_index in range(target_length):
+        center_index = min(target_index * 3, max_index)
+        left = source[max(0, center_index - 1)]
+        center = source[center_index]
+        right = source[min(max_index, center_index + 1)]
+        filtered.append(int(round((left + center + right) / 3)))
+
+    if sys.byteorder != "little":
+        filtered.byteswap()
+    return filtered.tobytes()

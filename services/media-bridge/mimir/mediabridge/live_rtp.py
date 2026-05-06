@@ -14,14 +14,13 @@ from .rtp import (
     RtpInboundTelemetryTracker,
     RtpOutboundStream,
     RtpPacketError,
+    RtpQualitySettings,
     RtpSocketReservation,
     _sequence_delta,
     decode_ulaw_payload,
     parse_rtp_packet,
 )
 from .runtimes import RuntimeSession, RuntimeSessionTelemetry, RuntimeStreamEvent
-
-INBOUND_JITTER_BUFFER_PACKETS = 3
 
 
 @dataclass(slots=True)
@@ -65,12 +64,18 @@ class LiveRtpBridge:
         reservation: RtpSocketReservation,
         runtime_session: RuntimeSession,
         hooks: LiveRtpHooks,
+        settings: RtpQualitySettings | None = None,
     ) -> None:
         self.reservation = reservation
         self.runtime_session = runtime_session
         self.hooks = hooks
+        self.settings = settings or RtpQualitySettings()
         self.inbound_telemetry = RtpInboundTelemetryTracker()
-        self.outbound_stream = RtpOutboundStream(payload_type=RTP_PAYLOAD_TYPE_PCMU, payload_bytes=G711_ULAW_PAYLOAD_BYTES)
+        self.outbound_stream = RtpOutboundStream(
+            payload_type=RTP_PAYLOAD_TYPE_PCMU,
+            payload_bytes=G711_ULAW_PAYLOAD_BYTES,
+            settings=self.settings,
+        )
         self.transport: asyncio.DatagramTransport | None = None
         self.protocol: _SessionProtocol | None = None
         self.remote_target: tuple[str, int] | None = None
@@ -296,16 +301,16 @@ class LiveRtpBridge:
                     continue
                 packet = self.outbound_stream.next_packet()
                 if packet is None:
-                    next_send_at = max(next_send_at + interval_seconds, now + interval_seconds)
+                    self._refresh_playout_telemetry()
+                    next_send_at = _next_send_deadline(next_send_at, now, interval_seconds)
                     continue
                 self.inbound_telemetry.note_sender_lag(max(0.0, now - next_send_at))
+                self.inbound_telemetry.note_outbound_packet_sent(now)
                 self.transport.sendto(packet, self.remote_target)
                 if not self._first_audio_emitted and self._started_at is not None:
                     self._first_audio_emitted = True
                     await self.hooks.on_first_audio(round((now - self._started_at) * 1000.0, 2))
-                next_send_at += interval_seconds
-                if next_send_at <= now:
-                    next_send_at = now + interval_seconds
+                next_send_at = _next_send_deadline(next_send_at, now, interval_seconds)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -340,7 +345,7 @@ class LiveRtpBridge:
             ready_payloads.append(self._inbound_packet_buffer.pop(self._expected_sequence_number))
             self._expected_sequence_number = (self._expected_sequence_number + 1) & 0xFFFF
 
-        if ready_payloads or len(self._inbound_packet_buffer) <= INBOUND_JITTER_BUFFER_PACKETS:
+        if ready_payloads or len(self._inbound_packet_buffer) <= self.settings.inbound_jitter_buffer_packets:
             return ready_payloads
 
         earliest_sequence = min(
@@ -365,6 +370,7 @@ class LiveRtpBridge:
         self._closed = True
         await self._close_runtime_and_tasks()
         telemetry = self.runtime_session.telemetry()
+        self._refresh_playout_telemetry()
         await self.hooks.on_telemetry(self.inbound_telemetry, telemetry)
         await self.hooks.on_failure(reason, self.inbound_telemetry, telemetry)
 
@@ -372,7 +378,11 @@ class LiveRtpBridge:
         if self._telemetry_emitted:
             return
         self._telemetry_emitted = True
+        self._refresh_playout_telemetry()
         await self.hooks.on_telemetry(self.inbound_telemetry, self.runtime_session.telemetry())
+
+    def _refresh_playout_telemetry(self) -> None:
+        self.inbound_telemetry.note_playout_snapshot(self.outbound_stream.playout_snapshot())
 
     async def _close_runtime_and_tasks(self) -> None:
         current_task = asyncio.current_task()
@@ -397,3 +407,10 @@ class LiveRtpBridge:
 def _is_older_than_expected(sequence_number: int, expected_sequence_number: int) -> bool:
     delta = _sequence_delta(expected_sequence_number, sequence_number)
     return 0 < delta < 0x8000
+
+
+def _next_send_deadline(next_send_at: float, now: float, interval_seconds: float) -> float:
+    candidate = next_send_at + interval_seconds
+    if candidate <= now:
+        return now + interval_seconds
+    return candidate

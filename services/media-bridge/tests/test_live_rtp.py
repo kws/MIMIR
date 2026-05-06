@@ -5,11 +5,12 @@ import socket
 
 import pytest
 from mimir.mediabridge.audio import PcmAudio
-from mimir.mediabridge.live_rtp import LiveRtpBridge, LiveRtpHooks
+from mimir.mediabridge.live_rtp import LiveRtpBridge, LiveRtpHooks, _next_send_deadline
 from mimir.mediabridge.rtp import (
     G711_ULAW_PAYLOAD_BYTES,
     RTP_PAYLOAD_TYPE_PCMU,
     RtpPacket,
+    RtpQualitySettings,
     build_rtp_packet,
     decode_ulaw_payload,
     parse_rtp_packet,
@@ -127,6 +128,96 @@ async def test_live_rtp_bridge_moves_audio_between_rtp_and_runtime() -> None:
 
 
 @pytest.mark.asyncio
+async def test_live_rtp_bridge_paces_runtime_audio_bursts() -> None:
+    runtime_session = FakeRuntimeSession()
+    remote_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    remote_sock.bind(("127.0.0.1", 0))
+    remote_sock.setblocking(False)
+
+    reservation = reserve_rtp_socket(
+        bind_address="127.0.0.1",
+        advertised_address="127.0.0.1",
+        requested_port=0,
+        port_range_start=23020,
+        port_range_end=23030,
+    )
+    bridge = LiveRtpBridge(
+        reservation=reservation,
+        runtime_session=runtime_session,
+        hooks=LiveRtpHooks(
+            on_first_audio=lambda _: _noop(),
+            on_telemetry=lambda *_: _noop(),
+            on_conversation_event=lambda *_: _noop(),
+            on_failure=lambda *_: _noop(),
+        ),
+    )
+
+    try:
+        await bridge.activate("127.0.0.1", remote_sock.getsockname()[1])
+        await runtime_session.output_events.put(
+            RuntimeStreamEvent(
+                event_type="audio",
+                audio=PcmAudio(pcm16=b"\x00\x00" * (480 * 5), sample_rate_hz=24_000, channels=1),
+            )
+        )
+
+        loop = asyncio.get_running_loop()
+        received_at = []
+        packets = []
+        for _ in range(3):
+            packet_bytes, _ = await asyncio.wait_for(loop.sock_recvfrom(remote_sock, 2048), timeout=1.0)
+            received_at.append(loop.time())
+            packets.append(parse_rtp_packet(packet_bytes))
+
+        assert received_at[-1] - received_at[0] >= 0.025
+        assert packets[1].sequence_number == (packets[0].sequence_number + 1) & 0xFFFF
+        assert packets[2].sequence_number == (packets[1].sequence_number + 1) & 0xFFFF
+        assert packets[1].timestamp == (packets[0].timestamp + G711_ULAW_PAYLOAD_BYTES) & 0xFFFFFFFF
+    finally:
+        await bridge.stop()
+        remote_sock.close()
+
+
+@pytest.mark.asyncio
+async def test_live_rtp_bridge_records_playout_underruns() -> None:
+    runtime_session = FakeRuntimeSession()
+    telemetry_events = []
+    remote_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    remote_sock.bind(("127.0.0.1", 0))
+    remote_sock.setblocking(False)
+
+    reservation = reserve_rtp_socket(
+        bind_address="127.0.0.1",
+        advertised_address="127.0.0.1",
+        requested_port=0,
+        port_range_start=23040,
+        port_range_end=23050,
+    )
+    bridge = LiveRtpBridge(
+        reservation=reservation,
+        runtime_session=runtime_session,
+        hooks=LiveRtpHooks(
+            on_first_audio=lambda _: _noop(),
+            on_telemetry=lambda tracker, _: _append_detailed_telemetry(telemetry_events, tracker.snapshot()),
+            on_conversation_event=lambda *_: _noop(),
+            on_failure=lambda *_: _noop(),
+        ),
+    )
+
+    try:
+        await bridge.activate("127.0.0.1", remote_sock.getsockname()[1])
+        await asyncio.sleep(0.05)
+        await bridge.stop()
+
+        assert telemetry_events
+        snapshot = telemetry_events[0]
+        assert snapshot.playout_underruns >= 1
+        assert snapshot.outbound_packets_sent == 0
+    finally:
+        remote_sock.close()
+
+
+@pytest.mark.asyncio
 async def test_live_rtp_bridge_reorders_small_out_of_order_bursts() -> None:
     runtime_session = FakeRuntimeSession()
     telemetry_events = []
@@ -223,6 +314,77 @@ async def test_live_rtp_bridge_reorders_small_out_of_order_bursts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_live_rtp_bridge_uses_configurable_jitter_window() -> None:
+    runtime_session = FakeRuntimeSession()
+    telemetry_events = []
+
+    remote_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    remote_sock.bind(("127.0.0.1", 0))
+    remote_sock.setblocking(False)
+
+    reservation = reserve_rtp_socket(
+        bind_address="127.0.0.1",
+        advertised_address="127.0.0.1",
+        requested_port=0,
+        port_range_start=23120,
+        port_range_end=23130,
+    )
+    bridge = LiveRtpBridge(
+        reservation=reservation,
+        runtime_session=runtime_session,
+        hooks=LiveRtpHooks(
+            on_first_audio=lambda _: _noop(),
+            on_telemetry=lambda tracker, _: _append_detailed_telemetry(telemetry_events, tracker.snapshot()),
+            on_conversation_event=lambda *_: _noop(),
+            on_failure=lambda *_: _noop(),
+        ),
+        settings=RtpQualitySettings(inbound_jitter_buffer_packets=1),
+    )
+
+    try:
+        await bridge.activate("127.0.0.1", remote_sock.getsockname()[1])
+        for sequence_number, timestamp in ((1, 0), (3, 320)):
+            remote_sock.sendto(
+                build_rtp_packet(
+                    RtpPacket(
+                        payload_type=RTP_PAYLOAD_TYPE_PCMU,
+                        sequence_number=sequence_number,
+                        timestamp=timestamp,
+                        ssrc=99,
+                        payload=b"\xff" * G711_ULAW_PAYLOAD_BYTES,
+                    )
+                ),
+                (reservation.advertised_address, reservation.local_port),
+            )
+
+        await asyncio.wait_for(runtime_session.input_audio.get(), timeout=1.0)
+        await asyncio.sleep(0.05)
+        assert runtime_session.input_audio.empty()
+
+        remote_sock.sendto(
+            build_rtp_packet(
+                RtpPacket(
+                    payload_type=RTP_PAYLOAD_TYPE_PCMU,
+                    sequence_number=4,
+                    timestamp=480,
+                    ssrc=99,
+                    payload=b"\xff" * G711_ULAW_PAYLOAD_BYTES,
+                )
+            ),
+            (reservation.advertised_address, reservation.local_port),
+        )
+
+        await asyncio.wait_for(runtime_session.input_audio.get(), timeout=1.0)
+        await asyncio.wait_for(runtime_session.input_audio.get(), timeout=1.0)
+        await bridge.stop()
+
+        assert telemetry_events
+        assert telemetry_events[0].missing_packets == 1
+    finally:
+        remote_sock.close()
+
+
+@pytest.mark.asyncio
 async def test_live_rtp_bridge_marks_missing_packets_when_jitter_window_is_exceeded() -> None:
     runtime_session = FakeRuntimeSession()
     telemetry_events = []
@@ -280,6 +442,10 @@ async def test_live_rtp_bridge_marks_missing_packets_when_jitter_window_is_excee
         assert snapshot.max_buffered_packets == 4
     finally:
         remote_sock.close()
+
+
+def test_next_send_deadline_does_not_catch_up_after_late_wakeup() -> None:
+    assert _next_send_deadline(next_send_at=1.0, now=1.1, interval_seconds=0.02) == pytest.approx(1.12)
 
 
 @pytest.mark.asyncio

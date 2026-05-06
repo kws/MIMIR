@@ -69,6 +69,7 @@ Optional:
 - `GEMINI_API_KEY` for Gemini Live fixture verification
 - `SCIENTIST_MODEL_NAME` to switch the default persona model without editing JSON
 - `MEDIA_BRIDGE_RTP_BIND_ADDRESS`, `MEDIA_BRIDGE_RTP_ADVERTISED_ADDRESS`, `MEDIA_BRIDGE_RTP_PORT_START`, and `MEDIA_BRIDGE_RTP_PORT_END` to control live RTP binding and the advertised bridge endpoint
+- `MEDIA_BRIDGE_PLAYOUT_MAX_DEPTH_MS`, `MEDIA_BRIDGE_PLAYOUT_TARGET_PREFILL_MS`, `MEDIA_BRIDGE_PLAYOUT_STALE_POLICY`, `MEDIA_BRIDGE_PLAYOUT_UNDERRUN_POLICY`, and `MEDIA_BRIDGE_INBOUND_JITTER_BUFFER_PACKETS` to control live RTP playout and jitter buffering
 
 The default OpenAI model is `gpt-realtime-mini`.
 
@@ -118,6 +119,7 @@ Behavior notes:
 - `GET /v1/call-events` forwards both durable and transient conversation events, but only durable events are written to the orchestrator datastore.
 - `GET /v1/calls/{call_id}` now includes a compact `conversation` block with status, latest completed turns, current instruction override text, and turn index.
 - Live RTP support is currently limited to bidirectional `g711_ulaw` over UDP with the OpenAI Realtime runtime.
+- Live RTP outbound playout is bounded and paced independently from runtime audio chunk arrival. Default playout settings keep up to `1200` ms queued audio, drop oldest stale audio, and report playout depth, drops, underruns, outbound packets, and packet spacing through `media.telemetry`.
 
 ## Call orchestration vs conversation orchestration
 
@@ -199,6 +201,7 @@ This is enough to trace transport and runtime quality across live calls:
 - inbound-to-active latency
 - first-audio latency
 - RTP packet loss, jitter, sender lag, and jitter-buffer depth
+- RTP playout buffer depth, stale audio drops, underruns, outbound packets, and packet spacing
 - duplicate, late, missing, and out-of-order packet rates
 - websocket reconnects/errors
 - call completion and failure reasons
